@@ -1,0 +1,20 @@
+id = "aliou.cast"
+name = "Cast"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Aliou's herdr customization hub. Native turn-end / needs-input notifications that jump to the right pane on click."
+platforms = ["macos"]
+
+# On GitHub `plugin install`, register the bundled HerdrNotify.app (rebranded
+# terminal-notifier with a herdr icon) with Launch Services so macOS shows the
+# herdr logo on notifications and `-execute` click actions work. `plugin link`
+# does not run build commands, so bin/notify.sh also self-registers on a TTL.
+[[build]]
+command = ["bash", "scripts/setup.sh"]
+platforms = ["macos"]
+
+# Fire a native notification whenever a pane's agent status changes. The
+# handler decides which transitions actually notify (see config: TRIGGER_STATUSES).
+[[events]]
+on = "pane.agent_status_changed"
+command = ["bash", "bin/notify.sh"]
