@@ -4,3 +4,6 @@ config.env
 last-event.json
 # macOS
 .DS_Store
+# rust build artifacts
+/target
+Cargo.lock

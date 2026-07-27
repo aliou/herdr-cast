@@ -13,8 +13,23 @@ platforms = ["macos"]
 command = ["bash", "scripts/setup.sh"]
 platforms = ["macos"]
 
+# Build the Rust layout palette binary.
+[[build]]
+command = ["cargo", "build", "--release"]
+platforms = ["macos"]
+
 # Fire a native notification whenever a pane's agent status changes. The
 # handler decides which transitions actually notify (see config: TRIGGER_STATUSES).
 [[events]]
 on = "pane.agent_status_changed"
 command = ["bash", "bin/notify.sh"]
+
+# A searchable popup palette for layout operations on the focused pane.
+[[panes]]
+id = "layout-palette"
+title = "Layout palette"
+platforms = ["macos"]
+placement = "popup"
+width = "60%"
+height = 12
+command = ["./target/release/layout-palette"]
