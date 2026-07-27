@@ -1,13 +1,13 @@
 # herdr-cast
 
 Aliou's personal [herdr](https://herdr.dev) customization hub, starting with
-native macOS notifications that ring when a turn ends or an agent needs you,
-and on click jump to the right pane/tab.
+native macOS notifications when a turn ends or an agent needs you that jump to
+the right pane/tab on click.
 
-Named for *casting* — both broadcasting a signal (a notification you can hear
-across the field) and casting a flock of sheep (tipping one onto its back to
-work it). It started as a notifier and is now the dumping ground for all my
-herdr customizations. Not published; just a local `herdr plugin link`.
+Named for *casting* — both broadcasting a signal and casting a flock of sheep
+(tipping one onto its back to work it). It started as a notifier and is now the
+dumping ground for all my herdr customizations. Not published; just a local
+`herdr plugin link`.
 
 ## What it does
 
@@ -48,12 +48,16 @@ grant is keyed to the bundle id, so it persists across plugin updates and moves.
 ## Avoid double notifications
 
 Keep herdr's toast INSIDE the herdr TUI so it doesn't double-post to the
-desktop (cast handles the OS notification):
+desktop. Cast handles the native visual notification, while pi-harness owns
+sound playback independently:
 
 ```toml
 # ~/.config/herdr/config.toml
 [ui.toast]
 delivery = "herdr"   # in-app toast only; "terminal"/"system" double with cast
+
+[ui.sound]
+enabled = false      # pi-harness owns notification sounds
 ```
 
 ## Configuration
@@ -72,14 +76,14 @@ Key settings:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `TRIGGER_STATUSES` | `blocked done` | which new statuses ring |
-| `SUPPRESS_FOCUSED` | `1` | mute only when the workspace is focused in herdr **and** a terminal from `TERMINAL_APP_IDS` is frontmost |
+| `TRIGGER_STATUSES` | `blocked done` | which new statuses show a native notification |
+| `SUPPRESS_FOCUSED` | `1` | hide the native banner when the workspace is focused in herdr **and** a terminal from `TERMINAL_APP_IDS` is frontmost; harness-owned sound is unaffected |
 | `DEBOUNCE_SECONDS` | `2` | drop repeated `(pane,status)` within window |
 | `ACTIVATE_ON_CLICK` | `1` | click → focus the agent |
 | `CLICK_COMMAND` | `agent focus {pane}` | `herdr` subcommand run on click |
 | `ACTIVATE_APP` | _(auto)_ | terminal app name `open -a` raises before focusing the pane; auto-detected from `TERM_PROGRAM` (Ghostty/WezTerm), falls back to `ACTIVATE_APP_FALLBACK` (default `Ghostty`) |
 | `GROUP` | `{pane}` | `-group` key; widen to `{pane}-{new_status}` so `done` doesn't hide unread `blocked` |
-| `TITLE_<STATUS>` / `BODY_<STATUS>` / `ICON_<STATUS>` / `SOUND_<STATUS>` | see config | per-status templates |
+| `TITLE_<STATUS>` / `BODY_<STATUS>` / `ICON_<STATUS>` | see config | per-status templates |
 | `NOTIFIER` | _(bundled app)_ | override the notifier binary |
 | `REGISTER_TTL_SECONDS` | `21600` | self-heal the Launch Services registration (left icon) |
 | `DEBUG` | `0` | dump event/context JSON + decision trace to the state dir |
@@ -88,14 +92,10 @@ Template placeholders: `{agent} {workspace} {worktree} {tab} {tab_label}
 {pane} {session} {old_status} {new_status} {cwd}`. `<STATUS>` is upper-cased;
 `*_DEFAULT` covers the rest.
 
-Sound mapping (mirrors `pi-harness/hooks/chrome/hooks/notification.ts`):
-
-- `blocked` → **Glass** (attention / dangerous / error all funnel to blocked
-  via `hooks/herdr/index.ts`)
-- `done` → **Funk** (clean turn end; herdr re-classifies a fresh `idle` as
-  `done` in `agent_view.rs`)
-- an errored turn surfaces as `blocked`, so an `ERROR_SOUND` (Basso) path is
-  unreachable as `done`; kept as the DEFAULT fallback.
+Cast intentionally does not play sounds. Pi-harness consumes the canonical
+notification events and plays the same Glass/Funk/Basso sounds inside and
+outside herdr. Keeping sound outside Cast means `SUPPRESS_FOCUSED` hides only
+the native banner and never silences the alert.
 
 ## Caveat: click focuses the pane inside herdr, raising the terminal window
 

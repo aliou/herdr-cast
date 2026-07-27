@@ -30,12 +30,13 @@ _cast_default() { [ -n "${!1:-}" ] || printf -v "$1" '%s' "$2"; }
 #              so pi's turn-end `idle` shows up here as `done`)
 _cast_default TRIGGER_STATUSES "blocked done"
 
-# Stay quiet for the workspace you are CURRENTLY looking at. Fires only when
-# BOTH the event's workspace is focused inside herdr AND a terminal listed in
-# TERMINAL_APP_IDS is the frontmost macOS app. So starting an agent and
-# switching to the browser still delivers the notification (the workspace stays
-# "focused" inside herdr even though you left the terminal).
-# 1 = enable, 0 = always notify.
+# Hide the native banner for the workspace you are CURRENTLY looking at. Fires
+# only when BOTH the event's workspace is focused inside herdr AND a terminal
+# listed in TERMINAL_APP_IDS is the frontmost macOS app. Cast owns visual
+# delivery only, so this never suppresses sounds played by the agent harness.
+# Starting an agent and switching to the browser still delivers the banner (the
+# workspace stays "focused" inside herdr even though you left the terminal).
+# 1 = enable, 0 = always show the banner.
 _cast_default SUPPRESS_FOCUSED "1"
 
 # Bundle ids (space separated) of terminal apps that can host herdr, used by the
@@ -106,25 +107,15 @@ _cast_default GROUP "{pane}"
 _cast_default TITLE_BLOCKED "⏳ {agent} needs input"
 _cast_default BODY_BLOCKED  "{workspace} · {worktree}"
 _cast_default ICON_BLOCKED  "assets/icons/blocked.png"
-# Harness sound mapping (hooks/chrome/hooks/notification.ts):
-#   ATTENTION (Glass) -> blocked: needs input / dangerous / error (all funnel
-#                        to blocked via hooks/herdr/index.ts)
-#   DONE-OK   (Funk)  -> done: clean turn end (herdr re-classifies a fresh
-#                        idle as done in agent_view.rs)
-#   DONE-ERR  (Basso) -> unreachable as `done` (an errored turn becomes
-#                        `blocked`); kept as the DEFAULT fallback just in case.
-_cast_default SOUND_BLOCKED "Glass"
 
 _cast_default TITLE_DONE "✅ {agent} done"
 _cast_default BODY_DONE  "{workspace} · {worktree}"
 _cast_default ICON_DONE  "assets/icons/done.png"
-_cast_default SOUND_DONE "Funk"
 
 # Catch-all for any other triggered status.
 _cast_default TITLE_DEFAULT "{agent}: {new_status}"
 _cast_default BODY_DEFAULT  "{workspace} · {worktree}"
 _cast_default ICON_DEFAULT  "assets/icons/working.png"
-_cast_default SOUND_DEFAULT "none"
 
 # Set DEBUG=1 to dump the raw event/context JSON + the decision trace to the
 # state dir (handy after a herdr upgrade).

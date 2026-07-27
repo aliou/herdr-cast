@@ -212,7 +212,6 @@ expand() {
 title="$(expand "$(pick TITLE)")"
 body="$(expand "$(pick BODY)")"
 icon="$(pick ICON)"
-sound="$(pick SOUND)"
 
 # --- 8. fire terminal-notifier ---------------------------------------------
 # -group REPLACES any earlier notification sharing the key; per-pane keeps one
@@ -221,7 +220,6 @@ args=(-title "$title" -message "$body")
 # shellcheck disable=SC2153
 group="$(expand "$GROUP")"
 [ -n "$group" ] && args+=(-group "$group")
-[ -n "$sound" ] && [ "$sound" != "none" ] && args+=(-sound "$sound")
 
 if [ -n "$icon" ]; then
   case "$icon" in /*) : ;; *) icon="$ROOT/$icon" ;; esac
