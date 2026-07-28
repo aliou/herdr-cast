@@ -11,25 +11,27 @@ and intended to run from a local linked checkout.
 
 ## Demos
 
-### Notifications
-
-> GIF placeholder: an agent finishes in a background workspace, the native
-> notification appears, and clicking it raises the terminal and focuses the
-> correct pane.
+Click a GIF to play the MP4.
 
 ### Workspace picker
 
-> GIF placeholder: switch between the nested spaces view and the flat agents
-> view, filter the list, and focus a pane.
+Switch between the nested spaces view and the flat agents view, filter, and
+focus a pane.
 
-### New workspace picker
+[![Workspace picker](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker-v3.gif)](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker.mp4)
 
-> GIF placeholder: filter ranked directories, toggle zoxide and alphabetical
-> modes, then create or focus a workspace.
+### New workspace
+
+Filter ranked directories, toggle zoxide and alphabetical order, then create
+the workspace.
+
+[![New workspace](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace-v4.gif)](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace.mp4)
 
 ### Layout palette
 
-> GIF placeholder: flip a two-pane split and move a pane into a new workspace.
+Flip a two-pane split, then move a pane into a new workspace.
+
+[![Layout palette](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette.gif)](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette.mp4)
 
 ## Features
 
