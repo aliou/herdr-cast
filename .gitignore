@@ -1,7 +1,3 @@
-# local per-machine state (herdr seeds HERDR_PLUGIN_CONFIG_DIR separately)
-config.env
-# debug dumps
-last-event.json
 # macOS
 .DS_Store
 # rust build artifacts

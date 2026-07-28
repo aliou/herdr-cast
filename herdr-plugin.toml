@@ -5,24 +5,16 @@ min_herdr_version = "0.7.0"
 description = "Aliou's herdr customization hub. Native turn-end / needs-input notifications that jump to the right pane on click."
 platforms = ["macos"]
 
-# On GitHub `plugin install`, register the bundled HerdrNotify.app (rebranded
-# terminal-notifier with a herdr icon) with Launch Services so macOS shows the
-# herdr logo on notifications and `-execute` click actions work. `plugin link`
-# does not run build commands, so bin/notify.sh also self-registers on a TTL.
-[[build]]
-command = ["bash", "scripts/setup.sh"]
-platforms = ["macos"]
-
-# Build the Rust layout palette binary.
+# Build the single Rust binary used by every plugin entrypoint.
 [[build]]
 command = ["cargo", "build", "--release"]
 platforms = ["macos"]
 
 # Fire a native notification whenever a pane's agent status changes. The
-# handler decides which transitions actually notify (see config: TRIGGER_STATUSES).
+# handler filters to the hard-coded blocked and done statuses.
 [[events]]
 on = "pane.agent_status_changed"
-command = ["bash", "bin/notify.sh"]
+command = ["./target/release/herdr-cast", "notify"]
 
 # A searchable popup palette for layout operations on the focused pane.
 [[panes]]
@@ -32,4 +24,4 @@ platforms = ["macos"]
 placement = "popup"
 width = "60%"
 height = 12
-command = ["./target/release/layout-palette"]
+command = ["./target/release/herdr-cast", "palette"]
