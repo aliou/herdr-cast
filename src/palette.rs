@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use skim::prelude::*;
 
 use crate::api::SocketClient;
+use crate::picker::{pick, Choice, Picker};
 
 #[derive(Debug, Clone, Serialize)]
 struct LayoutExportParams {
@@ -65,14 +65,15 @@ pub fn run() -> Result<(), String> {
         std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())?;
     let client = SocketClient::new(socket);
 
-    let Some(action) = choose_action() else {
+    let Some(action) = choose_action()? else {
         return Ok(());
     };
 
-    match action.as_str() {
-        "flip split direction" => flip_action(&client, &pane_id),
-        "move pane to new workspace" => move_to_new_workspace(&client, &pane_id, true).map(|_| ()),
-        other => Err(format!("unknown action: {other}")),
+    match action {
+        LayoutAction::FlipSplit => flip_action(&client, &pane_id),
+        LayoutAction::MoveToNewWorkspace => {
+            move_to_new_workspace(&client, &pane_id, true).map(|_| ())
+        }
     }
 }
 
@@ -239,25 +240,34 @@ fn flip_action(client: &SocketClient, pane_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn choose_action() -> Option<String> {
-    let options = SkimOptionsBuilder::default()
-        .height("50%")
-        .prompt("layout: ")
-        .header("choose an action")
-        .build()
-        .expect("static skim options are valid");
-    let items = vec!["flip split direction", "move pane to new workspace"];
+#[derive(Clone, Copy)]
+enum LayoutAction {
+    FlipSplit,
+    MoveToNewWorkspace,
+}
 
-    Skim::run_items(options, items).ok().and_then(|output| {
-        if output.is_abort {
-            None
-        } else {
-            output
-                .selected_items
-                .first()
-                .map(|item| item.output().to_string())
-        }
-    })
+fn choose_action() -> Result<Option<LayoutAction>, String> {
+    pick(
+        Picker {
+            placeholder: "Search actions",
+            empty_message: "No matching layout actions",
+            order: None,
+        },
+        vec![
+            Choice::new(
+                LayoutAction::FlipSplit,
+                "Flip split direction",
+                Some("Toggle a two-pane tab between side-by-side and stacked"),
+                "flip split direction side by side stacked",
+            ),
+            Choice::new(
+                LayoutAction::MoveToNewWorkspace,
+                "Move pane to new workspace",
+                Some("Detach and focus the selected pane in a new workspace"),
+                "move pane detach new workspace",
+            ),
+        ],
+    )
 }
 
 #[cfg(test)]

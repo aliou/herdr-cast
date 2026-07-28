@@ -1,103 +1,222 @@
-# herdr-cast
+# Cast
 
-Aliou's personal [herdr](https://herdr.dev) customization hub, starting with
-native macOS notifications when a turn ends or an agent needs you that jump to
-the right pane/tab on click.
+Cast is a collection of personal customizations for
+[Herdr](https://herdr.dev). It adds native macOS agent notifications,
+keyboard-first workspace navigation, zoxide-backed workspace creation, and a
+small layout command palette.
 
-Named for *casting* — both broadcasting a signal and casting a flock of sheep
-(tipping one onto its back to work it). It started as a notifier and is now the
-dumping ground for all my herdr customizations. Not published; just a local
-`herdr plugin link`.
+The plugin id is `ad.cast`. Source repository:
+[`aliou/herdr-cast`](https://github.com/aliou/herdr-cast). Cast is unpublished
+and intended to run from a local linked checkout.
 
-## What it does
+## Demos
 
-When an agent pane's status changes, herdr fires a
-`pane.agent_status_changed` event. Cast listens for `blocked` and `done`, then
-posts a native macOS notification through the bundled `HerdrNotify.app` (a
-rebranded `terminal-notifier` whose bundle id is `codes.dot.herdr-notify`, so
-the **left** icon is the herdr logo). Clicking the notification runs the same
-Rust binary, which raises Ghostty and focuses the pane through Herdr's socket.
+### Notifications
 
-Status semantics in herdr (relevant for pi):
+> GIF placeholder: an agent finishes in a background workspace, the native
+> notification appears, and clicking it raises the terminal and focuses the
+> correct pane.
 
-- `blocked` — the agent needs your input mid-turn (attention / dangerous /
-  error). Reported by the pi integration via `herdr:blocked`.
-- `done` — a turn ended and you haven't looked at the pane yet. herdr
-  re-classifies a fresh `idle` as `done` in `agent_view.rs`, so pi's turn-end
-  `idle` arrives here as `done`. Exactly the "turn end" trigger.
+### Workspace picker
+
+> GIF placeholder: switch between the nested spaces view and the flat agents
+> view, filter the list, and focus a pane.
+
+### New workspace picker
+
+> GIF placeholder: filter ranked directories, toggle zoxide and alphabetical
+> modes, then create or focus a workspace.
+
+### Layout palette
+
+> GIF placeholder: flip a two-pane split and move a pane into a new workspace.
+
+## Features
+
+### Native agent notifications
+
+- Posts native macOS notifications for Herdr's `blocked` and `done` agent
+  statuses.
+- Uses the bundled, rebranded `HerdrNotify.app` with Herdr status artwork.
+- Includes the agent, workspace, and working-directory context.
+- Groups notifications by pane and debounces duplicate pane/status events for
+  two seconds.
+- Suppresses a notification only when its Herdr workspace is focused and a
+  supported terminal is the frontmost macOS app.
+- Fails open when Herdr enrichment or frontmost-app detection is unavailable.
+- Verifies the notifier signature before signing and refreshes Launch Services
+  registration on a six-hour TTL.
+- Keeps sound out of the plugin so another integration can own audio playback.
+
+Clicking a notification raises Ghostty and asks Herdr to focus the exact pane
+from the original event. Event pane ids and workspace ids remain opaque; Cast
+does not substitute the currently focused pane.
+
+### Workspace and agent picker
+
+The workspace picker opens with `prefix+space` in the local Herdr config.
+
+- **Spaces view:** shows workspaces with their panes nested below them.
+- **Agents view:** shows only agent panes as flat rows containing the workspace
+  name, pane title, status, and agent name.
+- Press `Tab` to switch views.
+- Workspace matches retain their panes; pane matches retain their workspace as
+  context.
+- Agent mode uses Herdr's status priority: blocked, done, working, idle, then
+  unknown.
+- Working agents use an animated braille gutter indicator and a static yellow
+  status label.
+- The current-pane diamond takes precedence over the working animation.
+- Selecting a workspace or pane focuses it through Herdr's socket API.
+
+Search covers workspace labels, pane titles, opaque ids, agent names and
+statuses, metadata tokens, working directories, and managed worktree paths.
+
+### New workspace picker
+
+The directory picker opens with `prefix+shift+c` in the local Herdr config.
+
+- Reads candidates and frecency scores from `zoxide query -ls`.
+- Keeps zoxide entries below `~/code/src`.
+- Always includes `~/.dot` and top-level directories below `~/tmp`.
+- Uses compact labels such as `aliou/herdr-cast` and `tmp/repro` while keeping
+  the full tilde path visible.
+- Press `Tab` to toggle zoxide and alphabetical modes; the last mode persists
+  in Herdr's injected plugin state directory.
+- Zoxide mode keeps frecency order while filtering and displays scores inline.
+- Alphabetical mode hides scores and fuzzy-ranks filtered results.
+- A teal diamond marks directories already represented by a Herdr workspace.
+- Selecting a marked directory focuses its workspace instead of creating a
+  duplicate.
+- Selecting an unmarked directory creates and focuses a workspace there.
+
+Existing workspaces are matched through managed worktree checkout paths and
+exact pane working directories, with paths canonicalized when possible.
+
+### Layout palette
+
+The layout palette opens with `prefix+p` in the local Herdr config. It provides:
+
+- **Flip split direction:** toggles a two-pane tab between side-by-side and
+  stacked while preserving the split ratio.
+- **Move pane to new workspace:** detaches the focused pane, creates a
+  workspace, moves the pane there, and focuses it.
+
+Split flipping rejects nested layouts and attempts to restore the original
+layout if the second move fails.
+
+### Shared picker controls
+
+All palettes use the same Ratatui/Crossterm picker with Senzu colors and
+Herdr-owned popup chrome.
+
+| Action | Keys |
+| --- | --- |
+| Filter | Type normally |
+| Move | Up/Down or Ctrl+P/Ctrl+N |
+| Select | Enter |
+| Close | Esc or Ctrl+C |
+| Toggle picker mode | Tab |
+| Start/end of query | Home/End or Ctrl+A/Ctrl+E |
+| Move by character | Left/Right or Ctrl+B/Ctrl+F |
+| Delete previous word | Ctrl+W |
+| Delete to start/end | Ctrl+U/Ctrl+K |
+| Delete | Backspace/Delete |
+
+The query cursor accounts for Unicode display width.
 
 ## Requirements
 
-- macOS. Tested on macOS 26.
-- Rust and Cargo to build the plugin. On this machine they are provided through
-  Nix.
+- macOS 26 or newer
+- Herdr 0.7.0 or newer
+- `zoxide`
+- Rust and Cargo for local builds
 
-## Install (local dev; not published)
+This checkout uses Nix when Rust tooling is not already available.
+
+## Install
 
 ```sh
+git clone https://github.com/aliou/herdr-cast.git
+cd herdr-cast
 nix-shell -p cargo rustc --run 'cargo build --release'
 herdr plugin link "$PWD"
 ```
 
-This checkout is already linked as `aliou.cast` on Aliou's machine. Do not
-relink it during normal development. The Rust event handler verifies the app's
-signature and refreshes its Launch Services registration before notification
-delivery. Trigger one event, then grant notifications once under **System
-Settings → Notifications → herdr → Allow**. The grant is keyed to the bundle
-id, so it persists across plugin updates and moves unless the app is re-signed.
+After the first notification event, grant notification access under **System
+Settings → Notifications → herdr → Allow**. The grant is tied to the bundled
+app's `codes.dot.herdr-notify` bundle id.
 
-## Avoid double notifications
+This repository's local development checkout may already be linked. Do not
+relink it during routine development.
 
-Keep herdr's toast INSIDE the herdr TUI so it doesn't double-post to the
-desktop. Cast handles the native visual notification, while pi-harness owns
-sound playback independently:
+## Herdr configuration
+
+Cast owns native visual notifications. Keep Herdr's toast inside the TUI and
+leave sound to the integration that owns audio playback:
 
 ```toml
-# ~/.config/herdr/config.toml
 [ui.toast]
-delivery = "herdr"   # in-app toast only; "terminal"/"system" double with cast
+delivery = "herdr"
 
 [ui.sound]
-enabled = false      # pi-harness owns notification sounds
+enabled = false
 ```
 
-## Behavior
+Example pane bindings:
 
-Cast has no configuration file or user-facing environment overrides. Its
-personal defaults live in `src/notify.rs` and take effect with the next build:
+```toml
+[[keys.command]]
+command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint layout-palette'
+description = "open layout command palette"
+key = "prefix+p"
+type = "shell"
 
-- notify for `blocked` and `done`;
-- suppress the banner only when its Herdr workspace is focused and a supported
-  terminal is the frontmost macOS app;
-- debounce the same pane and status for two seconds;
-- group notifications by pane;
-- use the bundled status icons; and
-- raise Ghostty before focusing a clicked pane.
+[[keys.command]]
+command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint directory-workspace'
+description = "create workspace from a ranked directory"
+key = "prefix+shift+c"
+type = "shell"
 
-Cast intentionally does not play sounds. Pi-harness owns sound playback, so
-focused-workspace suppression hides only the native banner.
+[[keys.command]]
+command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint workspace-picker'
+description = "focus an existing workspace or pane"
+key = "prefix+space"
+type = "shell"
+```
 
 ## Architecture
 
-The plugin has two executable surfaces:
+- `src/main.rs` dispatches the `notify`, `focus`, `palette`,
+  `directory-workspace`, and `workspace-picker` commands.
+- `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
+  Unix socket.
+- `src/notify.rs` owns notification policy, state, macOS focus detection,
+  notifier registration, delivery, and click-to-focus behavior.
+- `src/picker.rs` provides the reusable fuzzy picker and rendering.
+- `src/palette.rs` implements layout actions.
+- `src/workspace.rs` implements workspace creation and workspace/pane focus.
+- `src/zoxide.rs` builds and orders directory candidates.
+- `assets/HerdrNotify.app` is the bundled notification application.
 
-- `assets/HerdrNotify.app` displays the macOS notification.
-- `target/release/herdr-cast` handles events, state, socket requests, click
-  focus, and the layout palette.
+`herdr-plugin.toml` defines the event subscription, pane entrypoints, popup
+sizes, and build command. Runtime artifacts live only in
+`HERDR_PLUGIN_STATE_DIR`.
 
-`herdr-plugin.toml` invokes the Rust binary with `notify` or `palette`. The
-notification's click action invokes it with `focus`. The binary uses the
-current `HERDR_SOCKET_PATH` and request shapes from `herdr api schema`; no shell
-scripts, `jq`, or separate config parser are involved.
+## Development
 
-## Caveat: click focuses the pane inside herdr, raising the terminal window
+```sh
+nix-shell -p cargo rustc rustfmt --run 'cargo fmt -- --check'
+nix-shell -p cargo rustc --run 'cargo test'
+nix-shell -p cargo rustc --run 'cargo build --release'
+```
 
-The Rust `focus` command performs a server-side workspace/tab/pane switch. It
-first runs `open -a Ghostty` so clicking from another app also raises the
-terminal window.
+The linked plugin executes `target/release/herdr-cast` directly, so Rust
+changes require a release rebuild but not a relink. Manifest changes require a
+registration refresh or a newly loaded Herdr server.
 
 ## License
 
-MIT for this plugin's own code. The bundled `assets/HerdrNotify.app` is a copy
-of [`terminal-notifier`](https://github.com/julienXX/terminal-notifier) (MIT);
-see `assets/HerdrNotify.app.LICENSE.md`.
+MIT for this plugin's code. The bundled `assets/HerdrNotify.app` is based on
+[`terminal-notifier`](https://github.com/julienXX/terminal-notifier) (MIT); see
+`assets/HerdrNotify.app.LICENSE.md`.

@@ -1,8 +1,8 @@
-id = "aliou.cast"
+id = "ad.cast"
 name = "Cast"
 version = "0.1.0"
 min_herdr_version = "0.7.0"
-description = "Aliou's herdr customization hub. Native turn-end / needs-input notifications that jump to the right pane on click."
+description = "Personal Herdr customizations with native agent notifications and workspace tools."
 platforms = ["macos"]
 
 # Build the single Rust binary used by every plugin entrypoint.
@@ -22,6 +22,26 @@ id = "layout-palette"
 title = "Layout palette"
 platforms = ["macos"]
 placement = "popup"
-width = "60%"
-height = 12
+width = 44
+height = 7
 command = ["./target/release/herdr-cast", "palette"]
+
+# Fuzzy-select a zoxide-ranked directory and create a workspace there.
+[[panes]]
+id = "directory-workspace"
+title = "New workspace"
+platforms = ["macos"]
+placement = "popup"
+width = "72%"
+height = "60%"
+command = ["./target/release/herdr-cast", "directory-workspace"]
+
+# Fuzzy-select and focus any workspace in the current Herdr session.
+[[panes]]
+id = "workspace-picker"
+title = "Switch workspace"
+platforms = ["macos"]
+placement = "popup"
+width = "72%"
+height = "80%"
+command = ["./target/release/herdr-cast", "workspace-picker"]

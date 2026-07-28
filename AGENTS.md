@@ -3,7 +3,7 @@
 ## Purpose and risk
 
 This repository is a custom, unpublished Herdr plugin for Aliou's local macOS
-setup. Its plugin id is `aliou.cast`. It is already linked, enabled, and loaded
+setup. Its plugin id is `ad.cast`. It is already linked, enabled, and loaded
 from this checkout on this machine; linked plugins are global to the local
 user and available to every Herdr session.
 
@@ -33,7 +33,7 @@ test. In particular:
 - complete cleanup even when the test fails.
 
 Installed and linked plugins and their state are shared across named sessions.
-Do not alter the existing `aliou.cast` registration or real state to make a test
+Do not alter the existing `ad.cast` registration or real state to make a test
 pass. If a manifest-registration test is necessary, copy the plugin to
 `/var/tmp`, give the copy a unique temporary plugin id, link that id while
 addressing only the disposable session, and unlink that exact temporary id
@@ -81,6 +81,14 @@ JSON request/response contract.
   delivery, and click-to-focus.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a split or move the focused pane to a new workspace.
+- `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
+  editing, tree rows, and animated agent-status icons.
+- `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
+  pane focus through `workspace.create`, `workspace.list`, `pane.list`,
+  `workspace.focus`, and `pane.focus`.
+- `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
+  and top-level `~/tmp` directories, and persists the selected zoxide or
+  alphabetical order.
 - `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve its
   license in `assets/HerdrNotify.app.LICENSE.md`.
 
@@ -98,7 +106,7 @@ injected state directory, never in the source checkout.
 - `herdr plugin link` does not run manifest `[[build]]` commands.
 - Manifest changes require registration refresh or a newly loaded server to be
   observed. Test them with the temporary-id workflow above, not by disturbing
-  `aliou.cast` in the current session.
+  `ad.cast` in the current session.
 - The `notify` command refreshes Launch Services registration on a six-hour
   TTL. Re-signing can change the app identity and reset the macOS notification
   grant, so preserve verify-before-sign behavior.
@@ -106,9 +114,9 @@ injected state directory, never in the source checkout.
 Useful discovery and diagnostics commands include:
 
 ```bash
-herdr plugin list --plugin aliou.cast --json
-herdr plugin config-dir aliou.cast
-herdr plugin log list --plugin aliou.cast
+herdr plugin list --plugin ad.cast --json
+herdr plugin config-dir ad.cast
+herdr plugin log list --plugin ad.cast
 herdr plugin pane --help
 herdr api schema
 ```
