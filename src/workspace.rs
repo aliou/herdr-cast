@@ -6,10 +6,11 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
-use crate::picker::{pick, pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker};
+use crate::picker::{pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker};
 use crate::zoxide::{self, RankedDirectory};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
+const WORKSPACE_PICKER_VIEW_FILE: &str = "workspace-picker-view";
 
 #[derive(Serialize)]
 struct EmptyParams {}
@@ -156,19 +157,21 @@ pub fn focus_existing() -> Result<(), String> {
     }
     let panes = list_panes(&client)?;
     let choices = workspace_tree_choices(workspaces, panes);
-    let Some(target) = pick(
+    let (target, agents_view) = pick_with_detail(
         Picker {
             placeholder: "Search workspaces and panes",
             empty_message: "No matching workspaces or panes",
             order: Some(OrderToggle {
                 primary: "spaces",
                 alternate: "agents",
-                initial_alternate: false,
+                initial_alternate: load_workspace_picker_agents_view(),
             }),
         },
         choices,
-    )?
-    else {
+        |_| None,
+    )?;
+    save_workspace_picker_agents_view(agents_view)?;
+    let Some(target) = target else {
         return Ok(());
     };
 
@@ -191,6 +194,35 @@ fn socket_client() -> Result<SocketClient, String> {
     let socket =
         std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())?;
     Ok(SocketClient::with_timeout(socket, SOCKET_TIMEOUT))
+}
+
+fn load_workspace_picker_agents_view() -> bool {
+    workspace_picker_view_file()
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|value| value.trim() == "agents")
+}
+
+fn save_workspace_picker_agents_view(agents: bool) -> Result<(), String> {
+    let Some(path) = workspace_picker_view_file() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create workspace picker state: {error}"))?;
+    }
+    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
+    fs::write(&temporary, if agents { "agents\n" } else { "spaces\n" })
+        .map_err(|error| format!("failed to save workspace picker view: {error}"))?;
+    fs::rename(&temporary, &path).map_err(|error| {
+        let _ = fs::remove_file(&temporary);
+        format!("failed to activate workspace picker view: {error}")
+    })
+}
+
+fn workspace_picker_view_file() -> Option<PathBuf> {
+    std::env::var_os("HERDR_PLUGIN_STATE_DIR")
+        .map(PathBuf::from)
+        .map(|directory| directory.join(WORKSPACE_PICKER_VIEW_FILE))
 }
 
 fn list_workspaces(client: &SocketClient) -> Result<Vec<WorkspaceInfo>, String> {

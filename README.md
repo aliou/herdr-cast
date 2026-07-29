@@ -62,6 +62,9 @@ The workspace picker opens with `prefix+space` in the local Herdr config.
 - **Agents view:** shows only agent panes as flat rows containing the workspace
   name, pane title, status, and agent name.
 - Press `Tab` to switch views.
+- The picker reopens on the last-used spaces or agents view.
+- Agents view starts at the first row; spaces view selects the current pane when
+  there is no query.
 - Workspace matches retain their panes; pane matches retain their workspace as
   context.
 - Agent mode uses Herdr's status priority: blocked, done, working, idle, then
