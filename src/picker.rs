@@ -316,7 +316,11 @@ impl PickerState {
     fn set_alternate_order<T>(&mut self, alternate: bool, choices: &[Choice<T>]) {
         self.alternate_order = alternate;
         self.update_matches(choices);
-        self.select_current(choices);
+        if alternate {
+            self.selected = 0;
+        } else {
+            self.select_current(choices);
+        }
     }
 
     fn toggle_order<T>(&mut self, choices: &[Choice<T>]) {
@@ -386,7 +390,9 @@ where
         picker.order.is_some_and(|order| order.initial_alternate),
     );
     state.update_matches(&choices);
-    state.select_current(&choices);
+    if !state.alternate_order {
+        state.select_current(&choices);
+    }
     let mut details_loaded = HashSet::new();
 
     let outcome = loop {
@@ -663,13 +669,11 @@ fn render_query(
         area,
     );
     if let Some(order) = order.filter(|_| area.width >= 24) {
-        let active = if state.alternate_order {
-            order.alternate
-        } else {
-            order.primary
-        };
-        let hint = format!("{active} · tab toggle");
-        let width = UnicodeWidthStr::width(hint.as_str()) as u16;
+        let tabs = order_tabs(order, state.alternate_order);
+        let width = tabs
+            .iter()
+            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+            .sum::<usize>() as u16;
         let hint_area = Rect::new(
             area.x + area.width.saturating_sub(width),
             area.y,
@@ -677,12 +681,7 @@ fn render_query(
             1,
         );
         frame.render_widget(
-            Paragraph::new(hint).style(
-                Style::default()
-                    .fg(ACCENT)
-                    .bg(BACKGROUND)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
             hint_area,
         );
     }
@@ -695,6 +694,33 @@ fn render_query(
             .min(area.x + area.width.saturating_sub(1));
         frame.set_cursor_position((x, area.y));
     }
+}
+
+fn order_tabs<'a>(order: OrderToggle<'a>, alternate: bool) -> Vec<Span<'a>> {
+    let active_style = Style::default()
+        .fg(BACKGROUND)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let inactive_style = Style::default().fg(MUTED).bg(BACKGROUND);
+    vec![
+        Span::styled(
+            format!(" {} ", order.primary),
+            if alternate {
+                inactive_style
+            } else {
+                active_style
+            },
+        ),
+        Span::styled(" ", Style::default().bg(BACKGROUND)),
+        Span::styled(
+            format!(" {} ", order.alternate),
+            if alternate {
+                active_style
+            } else {
+                inactive_style
+            },
+        ),
+    ]
 }
 
 fn render_results<T>(
@@ -1127,6 +1153,24 @@ mod tests {
         assert_eq!(state.matches, vec![1, 0]);
         state.set_alternate_order(false, &choices);
         assert_eq!(state.matches, vec![0, 1]);
+    }
+
+    #[test]
+    fn alternate_view_selects_first_match_and_primary_view_selects_current() {
+        let choices = vec![
+            Choice::new("first", "first", None::<String>, "first"),
+            Choice::new("current", "current", None::<String>, "current").current(true),
+        ];
+        let mut state = PickerState::new(&choices);
+        state.update_matches(&choices);
+        state.select_current(&choices);
+        assert_eq!(state.selected, 1);
+
+        state.set_alternate_order(true, &choices);
+        assert_eq!(state.selected, 0);
+
+        state.set_alternate_order(false, &choices);
+        assert_eq!(state.selected, 1);
     }
 
     #[test]
