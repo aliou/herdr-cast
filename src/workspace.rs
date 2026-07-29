@@ -107,20 +107,19 @@ pub fn create_from_directory() -> Result<(), String> {
             directory_choice(directory, existing.get(&normalized))
         })
         .collect();
-    let (target, alphabetical) = pick_with_detail(
+    let (target, _alphabetical) = pick_with_detail(
         Picker {
             placeholder: "Search ranked directories",
             empty_message: "No matching directories",
             order: Some(OrderToggle {
                 primary: "zoxide",
                 alternate: "alpha",
-                initial_alternate: zoxide::load_alphabetical_order(),
+                initial_alternate: false,
             }),
         },
         choices,
         |_| None,
     )?;
-    zoxide::save_alphabetical_order(alphabetical)?;
     let Some(target) = target else {
         return Ok(());
     };

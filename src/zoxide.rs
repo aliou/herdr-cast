@@ -118,38 +118,6 @@ fn compact_home(home: &Path, path: &Path) -> String {
         .unwrap_or_else(|_| path.display().to_string())
 }
 
-pub fn load_alphabetical_order() -> bool {
-    order_file()
-        .and_then(|path| fs::read_to_string(path).ok())
-        .is_some_and(|value| value.trim() == "alpha")
-}
-
-pub fn save_alphabetical_order(alphabetical: bool) -> Result<(), String> {
-    let Some(path) = order_file() else {
-        return Ok(());
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create directory picker state: {error}"))?;
-    }
-    let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(
-        &temporary,
-        if alphabetical { "alpha\n" } else { "zoxide\n" },
-    )
-    .map_err(|error| format!("failed to save directory picker order: {error}"))?;
-    fs::rename(&temporary, &path).map_err(|error| {
-        let _ = fs::remove_file(&temporary);
-        format!("failed to activate directory picker order: {error}")
-    })
-}
-
-fn order_file() -> Option<PathBuf> {
-    std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .map(PathBuf::from)
-        .map(|directory| directory.join("project-picker-order"))
-}
-
 fn parse_scores(output: &str) -> Vec<(f64, PathBuf)> {
     output
         .lines()

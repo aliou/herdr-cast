@@ -86,8 +86,8 @@ The directory picker opens with `prefix+shift+c` in the local Herdr config.
 - Always includes `~/.dot` and top-level directories below `~/tmp`.
 - Uses compact labels such as `aliou/herdr-cast` and `tmp/repro` while keeping
   the full tilde path visible.
-- Press `Tab` to toggle zoxide and alphabetical modes; the last mode persists
-  in Herdr's injected plugin state directory.
+- Opens in zoxide mode. Press `Tab` to toggle zoxide and alphabetical modes for
+  the current invocation.
 - Zoxide mode keeps frecency order while filtering and displays scores inline.
 - Alphabetical mode hides scores and fuzzy-ranks filtered results.
 - A teal diamond marks directories already represented by a Herdr workspace.
