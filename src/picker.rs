@@ -22,6 +22,7 @@ const FOREGROUND: Color = Color::Rgb(0xe8, 0xe8, 0xd3);
 const ACCENT: Color = Color::Rgb(0x8f, 0xbf, 0xdc);
 const SELECTION: Color = Color::Rgb(0x40, 0x40, 0x40);
 const MUTED: Color = Color::Rgb(0x60, 0x59, 0x58);
+const DISABLED: Color = Color::Rgb(0x88, 0x88, 0x88);
 const RED: Color = Color::Rgb(0xd7, 0x45, 0x45);
 const GREEN: Color = Color::Rgb(0x99, 0xad, 0x6a);
 const YELLOW: Color = Color::Rgb(0xfa, 0xd0, 0x7a);
@@ -174,6 +175,7 @@ struct PickerState {
     selected: usize,
     tick: usize,
     alternate_order: bool,
+    priority_sort: bool,
 }
 
 impl PickerState {
@@ -194,6 +196,7 @@ impl PickerState {
             selected,
             tick: 0,
             alternate_order,
+            priority_sort: true,
         }
     }
 
@@ -235,7 +238,7 @@ impl PickerState {
             matches.sort_by(|(left_index, left_score), (right_index, right_score)| {
                 let priority = if preserve_primary {
                     left_index.cmp(right_index)
-                } else if prioritize_alternate {
+                } else if prioritize_alternate && self.priority_sort {
                     choices[*left_index]
                         .alternate_order
                         .cmp(&choices[*right_index].alternate_order)
@@ -584,6 +587,15 @@ fn handle_event<T>(
             InputOutcome::Continue
         }
         KeyEvent {
+            code: KeyCode::Char('s'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if priority_sort_applies(choices, state.alternate_order) => {
+            state.priority_sort = !state.priority_sort;
+            state.update_matches(choices);
+            InputOutcome::Continue
+        }
+        KeyEvent {
             code: KeyCode::Char('u'),
             modifiers: KeyModifiers::CONTROL,
             ..
@@ -628,16 +640,25 @@ fn render<T>(
         area,
     );
 
+    let priority_sort = priority_sort_applies(choices, state.alternate_order);
+    let mut constraints = Vec::with_capacity(4);
+    if priority_sort {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Length(1));
+    constraints.push(Constraint::Min(1));
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Min(1),
-        ])
+        .constraints(constraints)
         .split(area);
-    render_query(frame, chunks[0], placeholder, state, order);
-    render_results(frame, chunks[2], empty_message, choices, state);
+    let mut index = 0;
+    if priority_sort {
+        render_mode_tabs(frame, chunks[index], state);
+        index += 1;
+    }
+    render_query(frame, chunks[index], placeholder, state, order);
+    render_results(frame, chunks[index + 2], empty_message, choices, state);
 }
 
 fn render_query(
@@ -721,6 +742,54 @@ fn order_tabs<'a>(order: OrderToggle<'a>, alternate: bool) -> Vec<Span<'a>> {
             },
         ),
     ]
+}
+
+fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
+    let active_style = Style::default()
+        .fg(BACKGROUND)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let disabled_style = Style::default().fg(DISABLED).bg(BACKGROUND);
+    vec![
+        Span::styled(
+            " prio ",
+            if priority {
+                active_style
+            } else {
+                disabled_style
+            },
+        ),
+        Span::styled(" ", Style::default().bg(BACKGROUND)),
+        Span::styled(
+            " fuzzy ",
+            if priority {
+                disabled_style
+            } else {
+                active_style
+            },
+        ),
+    ]
+}
+
+fn render_mode_tabs(frame: &mut Frame, area: Rect, state: &PickerState) {
+    let tabs = mode_tabs(state.priority_sort);
+    let width = tabs
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>() as u16;
+    if width == 0 {
+        return;
+    }
+    let hint_area = Rect::new(
+        area.x + area.width.saturating_sub(width),
+        area.y,
+        width.min(area.width),
+        1,
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
+        hint_area,
+    );
 }
 
 fn render_results<T>(
@@ -899,6 +968,13 @@ fn choice_visible<T>(choice: &Choice<T>, alternate: bool) -> bool {
     } else {
         !choice.alternate_only
     }
+}
+
+fn priority_sort_applies<T>(choices: &[Choice<T>], alternate: bool) -> bool {
+    alternate
+        && choices
+            .iter()
+            .any(|choice| choice.prioritize_alternate_order)
 }
 
 fn tree_prefix<T>(index: usize, choices: &[Choice<T>], visible: &[usize]) -> &'static str {
@@ -1186,6 +1262,28 @@ mod tests {
         let mut state = PickerState::new_with_order(&choices, true);
         state.query = "cast".into();
         state.cursor = state.query.len();
+        state.update_matches(&choices);
+        assert_eq!(state.matches, vec![1, 0]);
+    }
+
+    #[test]
+    fn priority_sort_toggle_lets_fuzzy_score_beat_status_order() {
+        let choices = vec![
+            Choice::new("done", "archive cast", None::<String>, "archive cast")
+                .alternate_order(1)
+                .prioritize_alternate_order(),
+            Choice::new("idle", "cast", None::<String>, "cast")
+                .alternate_order(3)
+                .prioritize_alternate_order(),
+        ];
+        let mut state = PickerState::new_with_order(&choices, true);
+        state.query = "cast".into();
+        state.cursor = state.query.len();
+        // Default keeps today's behaviour: agent status (done) outranks fuzzy score.
+        state.update_matches(&choices);
+        assert_eq!(state.matches, vec![0, 1]);
+        // Toggle to fuzzy ranking: the exact match surfaces above the done agent.
+        state.priority_sort = false;
         state.update_matches(&choices);
         assert_eq!(state.matches, vec![1, 0]);
     }
