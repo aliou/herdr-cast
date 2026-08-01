@@ -32,8 +32,8 @@ id = "directory-workspace"
 title = "New workspace"
 platforms = ["macos"]
 placement = "popup"
-width = "72%"
-height = "60%"
+width = "37%"
+height = "33%"
 command = ["./target/release/herdr-cast", "directory-workspace"]
 
 # Fuzzy-select and focus any workspace in the current Herdr session.
@@ -42,6 +42,6 @@ id = "workspace-picker"
 title = "Switch workspace"
 platforms = ["macos"]
 placement = "popup"
-width = "72%"
-height = "80%"
+width = "37%"
+height = "33%"
 command = ["./target/release/herdr-cast", "workspace-picker"]

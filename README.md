@@ -133,7 +133,21 @@ The query cursor accounts for Unicode display width.
 
 Pickers with tabs reserve one row above the query in every view, so switching
 views never shifts the layout. View tabs sit on the left of that row and sort
-tabs on the right. Narrow popups drop the sort tabs first.
+tabs on the right.
+
+Below 50 content columns, or 8 rows (9 with a tab row), the picker shows a
+centered "Popup too small" hint with the current and needed dimensions
+colored red or green per axis, instead of a half-rendered query and results,
+the same idea as btop's terminal-too-small screen. Esc/Ctrl+C still close the
+popup and typing still narrows matches, but Enter is ignored until the popup
+grows back above the floor.
+
+When a result list has more matches than fit, a solid accent-colored badge
+overlays the corner of the list: an up arrow and count top-right when earlier
+matches are scrolled out of view, a down arrow and count bottom-right when
+later ones are. Only one badge shows if just one row is visible. This doesn't
+reserve a row — it paints over the edge of the first/last visible row, so long
+paths or titles can run under it.
 
 ## Requirements
 

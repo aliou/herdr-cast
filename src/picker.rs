@@ -9,7 +9,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, List, ListItem, ListState, Paragraph},
@@ -28,6 +28,15 @@ const GREEN: Color = Color::Rgb(0x99, 0xad, 0x6a);
 const YELLOW: Color = Color::Rgb(0xfa, 0xd0, 0x7a);
 const TEAL: Color = Color::Rgb(0x66, 0x87, 0x99);
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+
+// Content-area floor below which tabs/query/results give way to a resize
+// hint (mirrors btop's "terminal too small" screen). Width covers the
+// longest placeholder ("Search workspaces and panes") plus room for a
+// readable result row; height covers the chrome rows plus a handful of
+// visible results.
+const MIN_CONTENT_WIDTH: u16 = 50;
+const MIN_CONTENT_HEIGHT_NO_TABS: u16 = 8;
+const MIN_CONTENT_HEIGHT_WITH_TABS: u16 = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChoiceStatus {
@@ -402,6 +411,7 @@ where
         state.select_current(&choices);
     }
     let mut details_loaded = HashSet::new();
+    let has_tabs = has_tab_row(picker.order, &choices);
 
     let outcome = loop {
         if let Some(index) = state.matches.get(state.selected).copied() {
@@ -411,7 +421,7 @@ where
                 }
             }
         }
-        session
+        let frame_area = session
             .terminal
             .draw(|frame| {
                 render(
@@ -423,7 +433,8 @@ where
                     &state,
                 )
             })
-            .map_err(|error| format!("failed to draw picker: {error}"))?;
+            .map_err(|error| format!("failed to draw picker: {error}"))?
+            .area;
 
         if !event::poll(std::time::Duration::from_millis(80))
             .map_err(|error| format!("failed to poll picker input: {error}"))?
@@ -433,8 +444,14 @@ where
         }
         let event =
             event::read().map_err(|error| format!("failed to read picker input: {error}"))?;
+        // Below the resize floor the picker draws a hint instead of the
+        // query/results, so ignore Enter rather than select an item the
+        // user can't see. Esc/Ctrl+C still cancel, and typing still narrows
+        // matches for when the popup grows back above the floor.
+        let too_small = is_too_small(frame_area.width, frame_area.height, has_tabs);
         match handle_event(event, &mut state, &choices, picker.order.is_some()) {
             InputOutcome::Continue => {}
+            InputOutcome::Select(_) if too_small => {}
             InputOutcome::Select(index) => break Some(index),
             InputOutcome::Cancel => break None,
         }
@@ -648,7 +665,11 @@ fn render<T>(
 
     // Reserve the tab row for every view of a picker that has tabs, so
     // toggling views never shifts the input or the results.
-    let tab_row = order.is_some() || has_priority_sort(choices);
+    let tab_row = has_tab_row(order, choices);
+    if is_too_small(area.width, area.height, tab_row) {
+        render_too_small(frame, area, tab_row);
+        return;
+    }
     let mut constraints = Vec::with_capacity(4);
     if tab_row {
         constraints.push(Constraint::Length(1));
@@ -815,6 +836,110 @@ fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
     ]
 }
 
+/// Whether a result row gets a second line for its detail text. Shared by
+/// render_results's per-item ListItem construction and by item_height below,
+/// so the overflow badges can never drift out of sync with what's actually
+/// drawn.
+fn has_detail_line<T>(choice: &Choice<T>, show_details: bool) -> bool {
+    show_details && !choice.inline_detail && choice.detail.is_some()
+}
+
+fn item_height<T>(choice: &Choice<T>, show_details: bool) -> u16 {
+    if has_detail_line(choice, show_details) {
+        2
+    } else {
+        1
+    }
+}
+
+/// Mirrors ratatui's `List::get_items_bounds` for a `ListState` that starts
+/// at offset 0 every frame (how render_results always builds it) with no
+/// scroll padding. `ListState` only exposes the resulting offset (the first
+/// visible position) after rendering, not the last one, so the overflow
+/// badges need their own copy of this math to know exactly what got clipped.
+fn visible_match_range(heights: &[u16], selected: usize, max_height: u16) -> (usize, usize) {
+    if heights.is_empty() {
+        return (0, 0);
+    }
+    let selected = selected.min(heights.len() - 1);
+    let max_height = u32::from(max_height);
+    let mut first = 0usize;
+    let mut last = 0usize;
+    let mut height = 0u32;
+    for next_height in heights {
+        if height + u32::from(*next_height) > max_height {
+            break;
+        }
+        height += u32::from(*next_height);
+        last += 1;
+    }
+    while selected >= last {
+        height += u32::from(heights[last]);
+        last += 1;
+        while height > max_height {
+            height -= u32::from(heights[first]);
+            first += 1;
+        }
+    }
+    (first, last)
+}
+
+/// Corner overflow badges, echoing the scroll indicator in this user's pi
+/// editor (`\u2500\u2500\u2500 \u2191 N more \u2500\u2500\u2500`) but as a small overlay instead of a dedicated
+/// border row, since the results area has none to spare.
+fn render_overflow_badges(
+    frame: &mut Frame,
+    area: Rect,
+    content_height: u16,
+    items_above: usize,
+    items_below: usize,
+) {
+    if content_height == 0 || area.width < 24 {
+        return;
+    }
+    // A single visible row can't hold both badges without them colliding;
+    // keep the bottom one since scrolling further down is the more common
+    // next move.
+    let show_above = items_above > 0 && !(content_height <= 1 && items_below > 0);
+    if show_above {
+        render_overflow_badge(frame, area.x, area.y, area.width, "\u{2191}", items_above);
+    }
+    if items_below > 0 {
+        render_overflow_badge(
+            frame,
+            area.x,
+            area.y + content_height - 1,
+            area.width,
+            "\u{2193}",
+            items_below,
+        );
+    }
+}
+
+fn render_overflow_badge(
+    frame: &mut Frame,
+    x: u16,
+    y: u16,
+    max_width: u16,
+    arrow: &str,
+    count: usize,
+) {
+    let text = format!(" {arrow} {count} more ");
+    let width = UnicodeWidthStr::width(text.as_str()) as u16;
+    if width == 0 || width > max_width || width > max_width / 2 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(text).style(
+            Style::default()
+                .fg(BACKGROUND)
+                .bg(ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(x + max_width - width, y, width, 1),
+    );
+}
+
 fn render_results<T>(
     frame: &mut Frame,
     area: Rect,
@@ -898,7 +1023,7 @@ fn render_results<T>(
             }
         }
         let mut lines = vec![Line::from(spans)];
-        if show_details && !choice.inline_detail {
+        if has_detail_line(choice, show_details) {
             if let Some(detail) = &choice.detail {
                 let detail_color = if selected { FOREGROUND } else { MUTED };
                 lines.push(Line::from(vec![
@@ -914,6 +1039,21 @@ fn render_results<T>(
         .highlight_style(Style::default().bg(SELECTION));
     let mut list_state = ListState::default().with_selected(Some(state.selected));
     frame.render_stateful_widget(list, area, &mut list_state);
+
+    let heights = state
+        .matches
+        .iter()
+        .map(|index| item_height(&choices[*index], show_details))
+        .collect::<Vec<_>>();
+    let (first_visible, last_visible) = visible_match_range(&heights, state.selected, area.height);
+    let content_height = heights[first_visible..last_visible].iter().sum();
+    render_overflow_badges(
+        frame,
+        area,
+        content_height,
+        first_visible,
+        heights.len() - last_visible,
+    );
 }
 
 fn hierarchical_matches<T>(
@@ -1001,6 +1141,74 @@ fn has_priority_sort<T>(choices: &[Choice<T>]) -> bool {
     choices
         .iter()
         .any(|choice| choice.prioritize_alternate_order)
+}
+
+fn has_tab_row<T>(order: Option<OrderToggle<'_>>, choices: &[Choice<T>]) -> bool {
+    order.is_some() || has_priority_sort(choices)
+}
+
+fn min_content_height(tab_row: bool) -> u16 {
+    if tab_row {
+        MIN_CONTENT_HEIGHT_WITH_TABS
+    } else {
+        MIN_CONTENT_HEIGHT_NO_TABS
+    }
+}
+
+fn is_too_small(width: u16, height: u16, tab_row: bool) -> bool {
+    width < MIN_CONTENT_WIDTH || height < min_content_height(tab_row)
+}
+
+fn dimension_style(actual: u16, minimum: u16) -> Style {
+    Style::default()
+        .fg(if actual < minimum { RED } else { GREEN })
+        .add_modifier(Modifier::BOLD)
+}
+
+/// Mirrors btop's "terminal too small" screen: below the content floor,
+/// replace the tabs/query/results entirely instead of drawing a
+/// half-visible query box and an unreadable result row.
+fn render_too_small(frame: &mut Frame, area: Rect, tab_row: bool) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let min_height = min_content_height(tab_row);
+    let label = Style::default().fg(FOREGROUND).add_modifier(Modifier::BOLD);
+
+    let mut lines = vec![Line::from(Span::styled("Popup too small", label))];
+    if area.height >= 2 {
+        lines.push(Line::from(vec![
+            Span::styled("Width = ", label),
+            Span::styled(
+                area.width.to_string(),
+                dimension_style(area.width, MIN_CONTENT_WIDTH),
+            ),
+            Span::styled("  Height = ", label),
+            Span::styled(
+                area.height.to_string(),
+                dimension_style(area.height, min_height),
+            ),
+        ]));
+    }
+    if area.height >= 5 {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled("Needed for this picker", label)));
+        lines.push(Line::from(vec![
+            Span::styled("Width = ", label),
+            Span::styled(MIN_CONTENT_WIDTH.to_string(), label),
+            Span::styled("  Height = ", label),
+            Span::styled(min_height.to_string(), label),
+        ]));
+    }
+
+    let message_height = (lines.len() as u16).min(area.height);
+    let y = area.y + area.height.saturating_sub(message_height) / 2;
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(Style::default().bg(BACKGROUND))
+            .alignment(Alignment::Center),
+        Rect::new(area.x, y, area.width, message_height),
+    );
 }
 
 fn tree_prefix<T>(index: usize, choices: &[Choice<T>], visible: &[usize]) -> &'static str {
@@ -1330,6 +1538,62 @@ mod tests {
         state.set_alternate_order(true, &choices);
         assert_eq!(state.matches, vec![1, 0]);
     }
+
+    #[test]
+    fn is_too_small_requires_an_extra_row_when_a_tab_row_is_present() {
+        assert!(!is_too_small(
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_NO_TABS,
+            false
+        ));
+        assert!(is_too_small(
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_NO_TABS,
+            true
+        ));
+        assert!(!is_too_small(
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_WITH_TABS,
+            true
+        ));
+        assert!(is_too_small(
+            MIN_CONTENT_WIDTH - 1,
+            MIN_CONTENT_HEIGHT_WITH_TABS,
+            true
+        ));
+    }
+
+    #[test]
+    fn visible_match_range_shows_as_many_uniform_rows_as_fit_from_the_top() {
+        let heights = vec![1; 10];
+        assert_eq!(visible_match_range(&heights, 0, 4), (0, 4));
+    }
+
+    #[test]
+    fn visible_match_range_scrolls_minimally_to_keep_the_selection_as_the_last_row() {
+        let heights = vec![1; 10];
+        assert_eq!(visible_match_range(&heights, 5, 4), (2, 6));
+        assert_eq!(visible_match_range(&heights, 9, 4), (6, 10));
+    }
+
+    #[test]
+    fn visible_match_range_accounts_for_two_line_items_when_trimming_the_front() {
+        // Heights: [2, 1, 1, 2, 1], budget 3.
+        let heights = vec![2, 1, 1, 2, 1];
+        assert_eq!(visible_match_range(&heights, 0, 3), (0, 2));
+        assert_eq!(visible_match_range(&heights, 4, 3), (3, 5));
+    }
+
+    #[test]
+    fn visible_match_range_never_panics_when_a_single_item_exceeds_the_budget() {
+        assert_eq!(visible_match_range(&[5], 0, 0), (1, 1));
+        assert_eq!(visible_match_range(&[1, 1, 1], 2, 0), (3, 3));
+    }
+
+    #[test]
+    fn visible_match_range_treats_an_empty_list_as_fully_visible() {
+        assert_eq!(visible_match_range(&[], 0, 10), (0, 0));
+    }
 }
 
 #[cfg(test)]
@@ -1342,9 +1606,19 @@ mod layout {
         order: Option<OrderToggle<'_>>,
         alternate: bool,
     ) -> Vec<String> {
+        rows_sized(choices, order, alternate, 60, 12)
+    }
+
+    fn rows_sized<T>(
+        choices: &[Choice<T>],
+        order: Option<OrderToggle<'_>>,
+        alternate: bool,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
         let mut state = PickerState::new_with_order(choices, alternate);
         state.update_matches(choices);
-        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
                 render(
@@ -1357,7 +1631,57 @@ mod layout {
                 )
             })
             .unwrap();
-        let buffer = terminal.backend().buffer().clone();
+        rows_from_buffer(terminal.backend().buffer())
+    }
+
+    fn flat_choices(count: usize) -> Vec<Choice<usize>> {
+        (0..count)
+            .map(|index| {
+                Choice::new(
+                    index,
+                    format!("item {index}"),
+                    None::<String>,
+                    format!("item {index}"),
+                )
+            })
+            .collect()
+    }
+
+    /// Choices with a detail line, so at area.height >= 14 render_results
+    /// gives every row a second line (see has_detail_line).
+    fn detailed_choices(count: usize) -> Vec<Choice<usize>> {
+        (0..count)
+            .map(|index| {
+                Choice::new(
+                    index,
+                    format!("item {index}"),
+                    Some(format!("detail {index}")),
+                    format!("item {index}"),
+                )
+            })
+            .collect()
+    }
+
+    /// Renders only the results list (bypassing tabs/query) so tests can pin
+    /// down an exact results-area height and selection for overflow-badge
+    /// coverage.
+    fn result_rows<T>(
+        choices: &[Choice<T>],
+        selected: usize,
+        width: u16,
+        height: u16,
+    ) -> Vec<String> {
+        let mut state = PickerState::new(choices);
+        state.update_matches(choices);
+        state.selected = selected;
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| render_results(frame, frame.area(), "No matches", choices, &state))
+            .unwrap();
+        rows_from_buffer(terminal.backend().buffer())
+    }
+
+    fn rows_from_buffer(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
         (0..buffer.area.height)
             .map(|y| {
                 (0..buffer.area.width)
@@ -1443,21 +1767,16 @@ mod layout {
 
     #[test]
     fn narrow_pickers_drop_the_sort_tabs_before_the_view_tabs() {
+        // Exercises render_tabs directly: at 20 cols the full render() would
+        // now show the too-small hint (floor is MIN_CONTENT_WIDTH), but the
+        // tab row's own drop-priority logic still matters for pickers with
+        // longer tab labels than this app currently has, so keep it covered.
         let choices = agent_choices();
         let mut state = PickerState::new_with_order(&choices, true);
         state.update_matches(&choices);
-        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(20, 1)).unwrap();
         terminal
-            .draw(|frame| {
-                render(
-                    frame,
-                    "Search",
-                    "No matches",
-                    view_toggle(),
-                    &choices,
-                    &state,
-                )
-            })
+            .draw(|frame| render_tabs(frame, frame.area(), view_toggle(), &choices, &state))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let row = (0..buffer.area.width)
@@ -1477,5 +1796,156 @@ mod layout {
         )];
         let rendered = rows(&choices, None, false);
         assert_eq!(query_row(&rendered), Some(0));
+    }
+
+    #[test]
+    fn too_small_popups_show_a_resize_hint_instead_of_query_and_results() {
+        let choices = agent_choices();
+        let rendered = rows_sized(&choices, view_toggle(), true, 30, 6);
+        assert!(rendered.iter().any(|row| row.contains("Popup too small")));
+        assert_eq!(query_row(&rendered), None);
+    }
+
+    #[test]
+    fn picker_renders_normally_at_the_minimum_content_size() {
+        let choices = agent_choices();
+        let rendered = rows_sized(
+            &choices,
+            view_toggle(),
+            true,
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_WITH_TABS,
+        );
+        assert!(!rendered.iter().any(|row| row.contains("too small")));
+        assert!(query_row(&rendered).is_some());
+    }
+
+    #[test]
+    fn tabless_pickers_need_one_less_row_before_the_resize_hint_appears() {
+        let choices = vec![Choice::new(
+            "flip",
+            "Flip split direction",
+            None::<String>,
+            "flip",
+        )];
+        let just_enough = rows_sized(
+            &choices,
+            None,
+            false,
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_NO_TABS,
+        );
+        assert!(query_row(&just_enough).is_some());
+
+        let one_row_short = rows_sized(
+            &choices,
+            None,
+            false,
+            MIN_CONTENT_WIDTH,
+            MIN_CONTENT_HEIGHT_NO_TABS - 1,
+        );
+        assert!(one_row_short
+            .iter()
+            .any(|row| row.contains("Popup too small")));
+    }
+
+    #[test]
+    fn short_lists_show_no_overflow_badges() {
+        let choices = flat_choices(5);
+        let rendered = result_rows(&choices, 0, 40, 10);
+        assert!(
+            !rendered.iter().any(|row| row.contains("more")),
+            "unexpected overflow badge: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn scrolled_to_the_top_shows_only_a_bottom_overflow_badge() {
+        let choices = flat_choices(15);
+        let rendered = result_rows(&choices, 0, 40, 5);
+        assert!(
+            !rendered[0].contains("more"),
+            "unexpected top badge: {:?}",
+            rendered[0]
+        );
+        assert!(
+            rendered[4].contains("\u{2193} 10 more"),
+            "missing bottom badge: {:?}",
+            rendered[4]
+        );
+    }
+
+    #[test]
+    fn scrolled_into_the_middle_shows_both_overflow_badges() {
+        let choices = flat_choices(15);
+        let rendered = result_rows(&choices, 10, 40, 5);
+        assert!(
+            rendered[0].contains("\u{2191} 6 more"),
+            "missing top badge: {:?}",
+            rendered[0]
+        );
+        assert!(
+            rendered[4].contains("\u{2193} 4 more"),
+            "missing bottom badge: {:?}",
+            rendered[4]
+        );
+    }
+
+    #[test]
+    fn scrolled_to_the_end_shows_only_a_top_overflow_badge() {
+        let choices = flat_choices(15);
+        let rendered = result_rows(&choices, 14, 40, 5);
+        assert!(
+            rendered[0].contains("\u{2191} 10 more"),
+            "missing top badge: {:?}",
+            rendered[0]
+        );
+        assert!(
+            !rendered[4].contains("more"),
+            "unexpected bottom badge: {:?}",
+            rendered[4]
+        );
+    }
+
+    #[test]
+    fn overflow_badges_are_skipped_when_the_row_is_too_narrow() {
+        let choices = flat_choices(15);
+        let rendered = result_rows(&choices, 0, 20, 5);
+        assert!(
+            !rendered.iter().any(|row| row.contains("more")),
+            "badge should not fit in 20 cols: {rendered:?}"
+        );
+    }
+
+    #[test]
+    fn two_line_detail_rows_are_accounted_for_in_the_overflow_count() {
+        // Each row takes 2 lines once show_details kicks in at height >= 14
+        // (has_detail_line), so exactly 7 of these 20 items fit. This guards
+        // item_height and the real ListItem construction against drifting
+        // apart \u2014 a naive 1-line-per-item assumption would claim 6 more
+        // instead of 13.
+        let choices = detailed_choices(20);
+        let rendered = result_rows(&choices, 0, 40, 14);
+        assert!(
+            rendered[13].contains("\u{2193} 13 more"),
+            "missing bottom badge accounting for 2-line rows: {:?}",
+            rendered[13]
+        );
+    }
+
+    #[test]
+    fn a_single_visible_row_keeps_only_the_bottom_overflow_badge() {
+        let choices = flat_choices(15);
+        let rendered = result_rows(&choices, 7, 40, 1);
+        assert!(
+            !rendered[0].contains("\u{2191}"),
+            "top badge should be suppressed: {:?}",
+            rendered[0]
+        );
+        assert!(
+            rendered[0].contains("\u{2193} 7 more"),
+            "missing bottom badge: {:?}",
+            rendered[0]
+        );
     }
 }
