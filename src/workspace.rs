@@ -6,7 +6,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
-use crate::picker::{pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker};
+use crate::picker::{pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker, ToggleKind};
 use crate::zoxide::{self, RankedDirectory};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
@@ -115,6 +115,7 @@ pub fn create_from_directory() -> Result<(), String> {
                 primary: "zoxide",
                 alternate: "alpha",
                 initial_alternate: false,
+                kind: ToggleKind::Sort,
             }),
         },
         choices,
@@ -164,6 +165,7 @@ pub fn focus_existing() -> Result<(), String> {
                 primary: "spaces",
                 alternate: "agents",
                 initial_alternate: load_workspace_picker_agents_view(),
+                kind: ToggleKind::View,
             }),
         },
         choices,

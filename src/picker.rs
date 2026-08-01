@@ -166,6 +166,15 @@ pub struct OrderToggle<'a> {
     pub primary: &'a str,
     pub alternate: &'a str,
     pub initial_alternate: bool,
+    pub kind: ToggleKind,
+}
+
+/// Decides which side of the tab row a toggle belongs to: what the picker
+/// lists on the left, how the picker ranks rows on the right.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ToggleKind {
+    View,
+    Sort,
 }
 
 struct PickerState {
@@ -637,9 +646,11 @@ fn render<T>(
         area,
     );
 
-    let priority_sort = priority_sort_applies(choices, state.alternate_order);
+    // Reserve the tab row for every view of a picker that has tabs, so
+    // toggling views never shifts the input or the results.
+    let tab_row = order.is_some() || has_priority_sort(choices);
     let mut constraints = Vec::with_capacity(4);
-    if priority_sort {
+    if tab_row {
         constraints.push(Constraint::Length(1));
     }
     constraints.push(Constraint::Length(1));
@@ -650,21 +661,74 @@ fn render<T>(
         .constraints(constraints)
         .split(area);
     let mut index = 0;
-    if priority_sort {
-        render_mode_tabs(frame, chunks[index], state);
+    if tab_row {
+        render_tabs(frame, chunks[index], order, choices, state);
         index += 1;
     }
-    render_query(frame, chunks[index], placeholder, state, order);
+    render_query(frame, chunks[index], placeholder, state);
     render_results(frame, chunks[index + 2], empty_message, choices, state);
 }
 
-fn render_query(
+fn render_tabs<T>(
     frame: &mut Frame,
     area: Rect,
-    placeholder: &str,
-    state: &PickerState,
     order: Option<OrderToggle<'_>>,
+    choices: &[Choice<T>],
+    state: &PickerState,
 ) {
+    let order_tabs = order.map(|order| (order.kind, order_tabs(order, state.alternate_order)));
+    let left = order_tabs
+        .as_ref()
+        .filter(|(kind, _)| *kind == ToggleKind::View)
+        .map(|(_, tabs)| tabs.clone());
+    // No picker pairs a sort toggle with priority sorting; the sort toggle wins
+    // the right slot when one ever does.
+    let right = order_tabs
+        .as_ref()
+        .filter(|(kind, _)| *kind == ToggleKind::Sort)
+        .map(|(_, tabs)| tabs.clone())
+        .or_else(|| {
+            priority_sort_applies(choices, state.alternate_order)
+                .then(|| mode_tabs(state.priority_sort))
+        });
+
+    let left_width = left.as_deref().map(span_width).unwrap_or(0);
+    if let Some(tabs) = left.filter(|_| area.width >= left_width) {
+        render_tab_group(frame, Rect::new(area.x, area.y, left_width, 1), tabs);
+    }
+    let Some(tabs) = right else {
+        return;
+    };
+    let width = span_width(&tabs);
+    // Drop the sort tabs rather than let them collide with the view tabs.
+    if width == 0 || area.width < left_width + width + 2 {
+        return;
+    }
+    render_tab_group(
+        frame,
+        Rect::new(area.x + area.width - width, area.y, width, 1),
+        tabs,
+    );
+}
+
+fn render_tab_group(frame: &mut Frame, area: Rect, tabs: Vec<Span<'_>>) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
+        area,
+    );
+}
+
+fn span_width(spans: &[Span<'_>]) -> u16 {
+    spans
+        .iter()
+        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+        .sum::<usize>() as u16
+}
+
+fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &PickerState) {
     let content = if state.query.is_empty() {
         Line::from(vec![
             Span::styled(
@@ -686,23 +750,6 @@ fn render_query(
         Paragraph::new(content).style(Style::default().bg(BACKGROUND)),
         area,
     );
-    if let Some(order) = order.filter(|_| area.width >= 24) {
-        let tabs = order_tabs(order, state.alternate_order);
-        let width = tabs
-            .iter()
-            .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-            .sum::<usize>() as u16;
-        let hint_area = Rect::new(
-            area.x + area.width.saturating_sub(width),
-            area.y,
-            width.min(area.width),
-            1,
-        );
-        frame.render_widget(
-            Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
-            hint_area,
-        );
-    }
     if area.width > 0 && area.height > 0 {
         let query_column = UnicodeWidthStr::width(&state.query[..state.cursor]) as u16;
         let x = area
@@ -766,27 +813,6 @@ fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
             },
         ),
     ]
-}
-
-fn render_mode_tabs(frame: &mut Frame, area: Rect, state: &PickerState) {
-    let tabs = mode_tabs(state.priority_sort);
-    let width = tabs
-        .iter()
-        .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
-        .sum::<usize>() as u16;
-    if width == 0 {
-        return;
-    }
-    let hint_area = Rect::new(
-        area.x + area.width.saturating_sub(width),
-        area.y,
-        width.min(area.width),
-        1,
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
-        hint_area,
-    );
 }
 
 fn render_results<T>(
@@ -968,10 +994,13 @@ fn choice_visible<T>(choice: &Choice<T>, alternate: bool) -> bool {
 }
 
 fn priority_sort_applies<T>(choices: &[Choice<T>], alternate: bool) -> bool {
-    alternate
-        && choices
-            .iter()
-            .any(|choice| choice.prioritize_alternate_order)
+    alternate && has_priority_sort(choices)
+}
+
+fn has_priority_sort<T>(choices: &[Choice<T>]) -> bool {
+    choices
+        .iter()
+        .any(|choice| choice.prioritize_alternate_order)
 }
 
 fn tree_prefix<T>(index: usize, choices: &[Choice<T>], visible: &[usize]) -> &'static str {
@@ -1300,5 +1329,153 @@ mod tests {
 
         state.set_alternate_order(true, &choices);
         assert_eq!(state.matches, vec![1, 0]);
+    }
+}
+
+#[cfg(test)]
+mod layout {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    fn rows<T>(
+        choices: &[Choice<T>],
+        order: Option<OrderToggle<'_>>,
+        alternate: bool,
+    ) -> Vec<String> {
+        let mut state = PickerState::new_with_order(choices, alternate);
+        state.update_matches(choices);
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    "Search workspaces and panes",
+                    "No matches",
+                    order,
+                    choices,
+                    &state,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect()
+    }
+
+    fn view_toggle() -> Option<OrderToggle<'static>> {
+        Some(OrderToggle {
+            primary: "spaces",
+            alternate: "agents",
+            initial_alternate: false,
+            kind: ToggleKind::View,
+        })
+    }
+
+    fn agent_choices() -> Vec<Choice<&'static str>> {
+        vec![
+            Choice::new("workspace", "herdr-cast", None::<String>, "herdr-cast").tree_root(),
+            Choice::new("pane", "agent", None::<String>, "agent")
+                .child_of(0)
+                .alternate_only()
+                .prioritize_alternate_order(),
+        ]
+    }
+
+    fn query_row(rendered: &[String]) -> Option<usize> {
+        rendered.iter().position(|row| row.starts_with('\u{203a}'))
+    }
+
+    #[test]
+    fn view_tabs_lead_the_row_and_sort_tabs_trail_it() {
+        let choices = agent_choices();
+        let rendered = rows(&choices, view_toggle(), true);
+        assert!(
+            rendered[0].starts_with(" spaces ") && rendered[0].ends_with("fuzzy"),
+            "unexpected tab row: {:?}",
+            rendered[0]
+        );
+        // The query row now holds nothing but the prompt.
+        assert_eq!(rendered[1], "\u{203a} Search workspaces and panes");
+    }
+
+    #[test]
+    fn sort_toggles_stay_on_the_right_without_a_view_toggle() {
+        let choices = vec![Choice::new(
+            "dir",
+            "aliou/herdr-cast",
+            None::<String>,
+            "herdr-cast",
+        )];
+        let rendered = rows(
+            &choices,
+            Some(OrderToggle {
+                primary: "zoxide",
+                alternate: "alpha",
+                initial_alternate: false,
+                kind: ToggleKind::Sort,
+            }),
+            false,
+        );
+        assert!(
+            rendered[0].starts_with(' ') && rendered[0].ends_with("alpha"),
+            "unexpected tab row: {:?}",
+            rendered[0]
+        );
+        assert_eq!(query_row(&rendered), Some(1));
+    }
+
+    #[test]
+    fn tab_row_is_reserved_so_views_share_a_layout() {
+        let choices = agent_choices();
+        let primary = rows(&choices, view_toggle(), false);
+        let alternate = rows(&choices, view_toggle(), true);
+        assert!(!primary[0].contains("prio"));
+        assert!(primary[0].starts_with(" spaces ") && primary[0].contains("agents"));
+        assert_eq!(query_row(&primary), query_row(&alternate));
+    }
+
+    #[test]
+    fn narrow_pickers_drop_the_sort_tabs_before_the_view_tabs() {
+        let choices = agent_choices();
+        let mut state = PickerState::new_with_order(&choices, true);
+        state.update_matches(&choices);
+        let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                render(
+                    frame,
+                    "Search",
+                    "No matches",
+                    view_toggle(),
+                    &choices,
+                    &state,
+                )
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let row = (0..buffer.area.width)
+            .map(|x| buffer[(x, 0)].symbol())
+            .collect::<String>();
+        assert!(!row.contains("prio"), "unexpected sort tabs: {row:?}");
+        assert!(row.contains("agents"), "missing view tabs: {row:?}");
+    }
+
+    #[test]
+    fn pickers_without_tabs_keep_the_input_on_the_first_row() {
+        let choices = vec![Choice::new(
+            "flip",
+            "Flip split direction",
+            None::<String>,
+            "flip",
+        )];
+        let rendered = rows(&choices, None, false);
+        assert_eq!(query_row(&rendered), Some(0));
     }
 }

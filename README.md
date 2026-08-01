@@ -68,7 +68,7 @@ The workspace picker opens with `prefix+space` in the local Herdr config.
 - Workspace matches retain their panes; pane matches retain their workspace as
   context.
 - Agent mode uses Herdr's status priority: blocked, done, working, idle, then
-  unknown.
+  unknown. Press `Ctrl+S` to rank filtered results by fuzzy score instead.
 - Working agents use an animated braille gutter indicator and a static yellow
   status label.
 - The current-pane diamond takes precedence over the working animation.
@@ -118,17 +118,22 @@ Herdr-owned popup chrome.
 | Action | Keys |
 | --- | --- |
 | Filter | Type normally |
-| Move | Up/Down or Ctrl+P/Ctrl+N |
+| Move | Up/Down, Ctrl+P/Ctrl+N, or Ctrl+K/Ctrl+J |
 | Select | Enter |
 | Close | Esc or Ctrl+C |
 | Toggle picker mode | Tab |
+| Toggle priority and fuzzy sorting | Ctrl+S |
 | Start/end of query | Home/End or Ctrl+A/Ctrl+E |
 | Move by character | Left/Right or Ctrl+B/Ctrl+F |
 | Delete previous word | Ctrl+W |
-| Delete to start/end | Ctrl+U/Ctrl+K |
+| Delete to start | Ctrl+U |
 | Delete | Backspace/Delete |
 
 The query cursor accounts for Unicode display width.
+
+Pickers with tabs reserve one row above the query in every view, so switching
+views never shifts the layout. View tabs sit on the left of that row and sort
+tabs on the right. Narrow popups drop the sort tabs first.
 
 ## Requirements
 
