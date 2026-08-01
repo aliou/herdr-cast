@@ -312,10 +312,6 @@ impl PickerState {
         self.cursor = 0;
     }
 
-    fn delete_to_end(&mut self) {
-        self.query.truncate(self.cursor);
-    }
-
     fn set_alternate_order<T>(&mut self, alternate: bool, choices: &[Choice<T>]) {
         self.alternate_order = alternate;
         self.update_matches(choices);
@@ -485,6 +481,11 @@ fn handle_event<T>(
             code: KeyCode::Char('p'),
             modifiers: KeyModifiers::CONTROL,
             ..
+        }
+        | KeyEvent {
+            code: KeyCode::Char('k'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
         } => {
             state.move_up();
             InputOutcome::Continue
@@ -495,6 +496,11 @@ fn handle_event<T>(
         }
         | KeyEvent {
             code: KeyCode::Char('n'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        }
+        | KeyEvent {
+            code: KeyCode::Char('j'),
             modifiers: KeyModifiers::CONTROL,
             ..
         } => {
@@ -601,15 +607,6 @@ fn handle_event<T>(
             ..
         } => {
             state.delete_to_start();
-            state.update_matches(choices);
-            InputOutcome::Continue
-        }
-        KeyEvent {
-            code: KeyCode::Char('k'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } => {
-            state.delete_to_end();
             state.update_matches(choices);
             InputOutcome::Continue
         }
