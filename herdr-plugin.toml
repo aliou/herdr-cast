@@ -27,6 +27,11 @@ height = 7
 command = ["./target/release/herdr-cast", "palette"]
 
 # Fuzzy-select a zoxide-ranked directory and create a workspace there.
+#
+# width/height here are only a fallback for direct `plugin.pane.open` calls
+# that omit sizing. The keybinding in config.toml instead opens this pane
+# through `herdr-cast open-popup`, which clamps 37%/33% of the terminal area
+# to a minimum cell size so the popup stays usable on small screens.
 [[panes]]
 id = "directory-workspace"
 title = "New workspace"
@@ -37,6 +42,7 @@ height = "33%"
 command = ["./target/release/herdr-cast", "directory-workspace"]
 
 # Fuzzy-select and focus any workspace in the current Herdr session.
+# See the sizing note above: config.toml opens this via `open-popup` too.
 [[panes]]
 id = "workspace-picker"
 title = "Switch workspace"
