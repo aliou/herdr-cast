@@ -25,6 +25,10 @@ enum PaneMoveDestination {
         split: SplitDirection,
         ratio: Option<f32>,
     },
+    NewTab {
+        label: Option<String>,
+        workspace_id: Option<String>,
+    },
     NewWorkspace {
         label: Option<String>,
         tab_label: Option<String>,
@@ -71,6 +75,7 @@ pub fn run() -> Result<(), String> {
 
     match action {
         LayoutAction::FlipSplit => flip_action(&client, &pane_id),
+        LayoutAction::MoveToNewTab => move_to_new_tab(&client, &pane_id).map(|_| ()),
         LayoutAction::MoveToNewWorkspace => {
             move_to_new_workspace(&client, &pane_id, true).map(|_| ())
         }
@@ -138,6 +143,18 @@ fn move_to_new_workspace(
             tab_label: None,
         },
         focus,
+    )
+}
+
+fn move_to_new_tab(client: &SocketClient, pane_id: &str) -> Result<String, String> {
+    pane_move(
+        client,
+        pane_id,
+        PaneMoveDestination::NewTab {
+            label: None,
+            workspace_id: None,
+        },
+        true,
     )
 }
 
@@ -243,6 +260,7 @@ fn flip_action(client: &SocketClient, pane_id: &str) -> Result<(), String> {
 #[derive(Clone, Copy)]
 enum LayoutAction {
     FlipSplit,
+    MoveToNewTab,
     MoveToNewWorkspace,
 }
 
@@ -259,6 +277,12 @@ fn choose_action() -> Result<Option<LayoutAction>, String> {
                 "Flip split direction",
                 Some("Toggle a two-pane tab between side-by-side and stacked"),
                 "flip split direction side by side stacked",
+            ),
+            Choice::new(
+                LayoutAction::MoveToNewTab,
+                "Move pane to new tab",
+                Some("Move the selected pane into a new tab in the current workspace"),
+                "move pane new tab current workspace",
             ),
             Choice::new(
                 LayoutAction::MoveToNewWorkspace,
@@ -337,6 +361,31 @@ mod tests {
                     "type": "new_workspace",
                     "label": null,
                     "tab_label": null
+                },
+                "focus": true
+            })
+        );
+    }
+
+    #[test]
+    fn new_tab_request_targets_the_current_workspace() {
+        let params = PaneMoveParams {
+            pane_id: "w1:p1".into(),
+            destination: PaneMoveDestination::NewTab {
+                label: None,
+                workspace_id: None,
+            },
+            focus: true,
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({
+                "pane_id": "w1:p1",
+                "destination": {
+                    "type": "new_tab",
+                    "label": null,
+                    "workspace_id": null
                 },
                 "focus": true
             })

@@ -104,6 +104,8 @@ The layout palette opens with `prefix+p` in the local Herdr config. It provides:
 
 - **Flip split direction:** toggles a two-pane tab between side-by-side and
   stacked while preserving the split ratio.
+- **Move pane to new tab:** moves the focused pane into a new tab in the
+  current workspace and focuses it.
 - **Move pane to new workspace:** detaches the focused pane, creates a
   workspace, moves the pane there, and focuses it.
 
