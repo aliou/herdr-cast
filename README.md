@@ -2,8 +2,8 @@
 
 Cast is a collection of personal customizations for
 [Herdr](https://herdr.dev). It adds native macOS agent notifications,
-keyboard-first workspace navigation, zoxide-backed workspace creation, and a
-small layout command palette.
+keyboard-first workspace navigation, zoxide-backed workspace creation, Space
+sidebar metadata, and a small layout command palette.
 
 The plugin id is `ad.cast`. Source repository:
 [`aliou/herdr-cast`](https://github.com/aliou/herdr-cast). Cast is unpublished
@@ -98,6 +98,48 @@ The directory picker opens with `prefix+shift+c` in the local Herdr config.
 Existing workspaces are matched through managed worktree checkout paths and
 exact pane working directories, with paths canonicalized when possible.
 
+### Space sidebar metadata
+
+Herdr builds a Space's second sidebar row from `branch` and `git_status`, both
+derived from the first tab's root pane. Directories that are not repositories
+render nothing, and remote sessions never show at all. Cast reports four
+custom workspace tokens to fill that row:
+
+- `$org`: the organization or client owning the root pane's directory, using
+  the same taxonomy as the shell prompt. Dropped when it only repeats the
+  Space name.
+- `$repos`: how many repositories a container directory holds, for Spaces that
+  are not repositories themselves. Reported only from two repositories up,
+  because a lone repository says less than the Space name already does.
+- `$host`: the first label of the host of a remote session running in the root
+  pane, such as `donut` for `donut.tetra-albacore.ts.net`.
+- `$hostkind`: `sbx` when that host is a lab sandbox, so the sidebar can color
+  the marker.
+- `$pad`: a braille blank reported when a Space has nothing else to show. Herdr
+  hides a row whose tokens are all empty and trims whitespace out of metadata
+  values, so holding the row open takes a character that prints as nothing
+  without being whitespace. Every Space then keeps the same height.
+
+Nothing here repeats the Space name. Herdr names a Space after the repository
+or directory its root pane sits in and renames it when that pane moves, so the
+name already answers what, and these tokens answer where.
+
+A remote session replaces the local tokens, since the local directory no
+longer answers where the pane is. Cast reads the host from the pane's
+foreground process list rather than the typed command, so wrappers such as
+`sbxctl connect` still resolve to the real destination.
+
+Only the root pane counts, matching how Herdr picks a Space's Git identity and
+name. A second pane running SSH does not relabel the Space.
+
+The organization taxonomy is hard-coded personal policy in `src/space.rs`.
+
+Refreshes come from three places: a startup hook that rebuilds every Space,
+because Herdr drops metadata tokens when a new server restores a session;
+`workspace.created` and `workspace.focused` event hooks; and the zsh
+integration below. Herdr withholds `pane.updated`, its own live signal, from
+plugin hooks as a high-volume event.
+
 ### Layout palette
 
 The layout palette opens with `prefix+p` in the local Herdr config. It provides:
@@ -182,6 +224,30 @@ delivery = "herdr"
 enabled = false
 ```
 
+Space rows need the custom tokens. Missing tokens drop their separator, so one
+row serves every case:
+
+```toml
+[ui.sidebar.spaces]
+rows = [
+  ["state_icon", "workspace"],
+  [
+    { token = "$hostkind", fg = "#d98870" },
+    "$host",
+    "$org",
+    "$repos",
+    "branch",
+    "git_status",
+    "$pad",
+  ],
+]
+```
+
+That renders `378 · main` for a repository inside a known organization, `main`
+for one outside it, `378 · 11 repos` for a directory of repositories, and
+`sbx · copper-eva-stratt` for a sandbox session. Anything else gets a blank
+second line rather than none.
+
 Example pane bindings:
 
 ```toml
@@ -204,10 +270,27 @@ key = "prefix+space"
 type = "shell"
 ```
 
+## Shell integration
+
+The zsh hooks keep Space metadata current between plugin events. `precmd`
+syncs after a directory change; `preexec` schedules a second pass for commands
+that hand the terminal to another machine, because the remote process does not
+exist yet when it runs.
+
+```sh
+cast=~/code/src/github.com/aliou/herdr-cast/target/release/herdr-cast
+[[ -x $cast ]] && eval "$($cast shell-init zsh)"
+```
+
+The snippet points at the binary that printed it and does nothing outside a
+Herdr pane. The shell only triggers a sync; every value still comes from
+Herdr's API.
+
 ## Architecture
 
 - `src/main.rs` dispatches the `notify`, `focus`, `palette`,
-  `directory-workspace`, and `workspace-picker` commands.
+  `directory-workspace`, `workspace-picker`, `sync-space`, `sync-spaces`, and
+  `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, macOS focus detection,
@@ -215,11 +298,13 @@ type = "shell"
 - `src/picker.rs` provides the reusable fuzzy picker and rendering.
 - `src/palette.rs` implements layout actions.
 - `src/workspace.rs` implements workspace creation and workspace/pane focus.
+- `src/space.rs` reports Space sidebar metadata and prints the zsh
+  integration.
 - `src/zoxide.rs` builds and orders directory candidates.
 - `assets/HerdrNotify.app` is the bundled notification application.
 
-`herdr-plugin.toml` defines the event subscription, pane entrypoints, popup
-sizes, and build command. Runtime artifacts live only in
+`herdr-plugin.toml` defines the startup hook, event subscriptions, pane
+entrypoints, popup sizes, and build command. Runtime artifacts live only in
 `HERDR_PLUGIN_STATE_DIR`.
 
 ## Development

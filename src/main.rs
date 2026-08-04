@@ -3,6 +3,7 @@ mod notify;
 mod palette;
 mod picker;
 mod popup;
+mod space;
 mod workspace;
 mod zoxide;
 
@@ -15,11 +16,20 @@ fn main() {
             workspace::create_from_directory()
         }
         Some("workspace-picker") if arguments.next().is_none() => workspace::focus_existing(),
+        Some("sync-space") => match (arguments.next().as_deref(), arguments.next()) {
+            (None, _) => space::sync(false),
+            (Some("--await-remote"), None) => space::sync(true),
+            _ => Err("usage: herdr-cast sync-space [--await-remote]".to_string()),
+        },
+        Some("sync-spaces") if arguments.next().is_none() => space::sync_all(),
+        Some("shell-init") => match (arguments.next(), arguments.next()) {
+            (Some(shell), None) => space::shell_init(&shell),
+            _ => Err("usage: herdr-cast shell-init zsh".to_string()),
+        },
         Some("open-popup") => {
             let arguments: Vec<String> = arguments.collect();
-            parse_open_popup_args(&arguments).and_then(|(entrypoint, spec)| {
-                popup::run(&entrypoint, spec)
-            })
+            parse_open_popup_args(&arguments)
+                .and_then(|(entrypoint, spec)| popup::run(&entrypoint, spec))
         }
         Some("focus") => {
             let socket_path = arguments.next();
@@ -29,10 +39,11 @@ fn main() {
                 _ => Err("usage: herdr-cast focus <socket-path> <pane-id>".to_string()),
             }
         }
-        _ => Err(
-            "usage: herdr-cast <notify|palette|directory-workspace|workspace-picker|open-popup|focus>"
-                .to_string(),
-        ),
+        _ => Err(concat!(
+            "usage: herdr-cast <notify|palette|directory-workspace|workspace-picker",
+            "|sync-space|sync-spaces|shell-init|open-popup|focus>"
+        )
+        .to_string()),
     };
 
     if let Err(error) = result {

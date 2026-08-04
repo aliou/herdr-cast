@@ -10,11 +10,29 @@ platforms = ["macos"]
 command = ["cargo", "build", "--release"]
 platforms = ["macos"]
 
+# Rebuild every Space's sidebar metadata. Herdr drops metadata tokens when a
+# new server restores a session, so without this the second Space row stays
+# empty until something reports again.
+[[startup]]
+command = ["./target/release/herdr-cast", "sync-spaces"]
+
 # Fire a native notification whenever a pane's agent status changes. The
 # handler filters to the hard-coded blocked and done statuses.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["./target/release/herdr-cast", "notify"]
+
+# Label a Space as soon as it exists.
+[[events]]
+on = "workspace.created"
+command = ["./target/release/herdr-cast", "sync-space"]
+
+# Catch anything the shell integration missed, such as a remote session
+# started outside an interactive prompt. `pane.updated` would be the precise
+# signal, but Herdr withholds it from plugin hooks as a high-volume event.
+[[events]]
+on = "workspace.focused"
+command = ["./target/release/herdr-cast", "sync-space"]
 
 # A searchable popup palette for layout operations on the focused pane.
 [[panes]]

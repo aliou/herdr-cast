@@ -73,8 +73,8 @@ JSON request/response contract.
 - `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `notify`, `palette`, and `focus`
-  commands.
+- `src/main.rs`: dispatches the Rust binary's `notify`, `palette`, `focus`,
+  `sync-space`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, macOS frontmost-app detection, notifier registration,
@@ -86,6 +86,9 @@ JSON request/response contract.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
   pane focus through `workspace.create`, `workspace.list`, `pane.list`,
   `workspace.focus`, and `pane.focus`.
+- `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
+  `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
+  `pane.process_info`, and prints the zsh integration that triggers a sync.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order.
@@ -139,6 +142,21 @@ runtime invocation.
 - Keep notification sound out of this plugin; it owns visual delivery only.
 - Preserve focused-workspace suppression: suppress only when both the Herdr
   workspace is focused and a supported terminal app is frontmost.
+- Space metadata describes the first tab's root pane, which is the pane Herdr
+  uses for a Space's own Git identity and the first entry `pane.list` returns
+  for a workspace. Never relabel a Space from a secondary pane.
+- Never report a branch token, and never report the repository or directory a
+  space sits in. Herdr derives `branch` and `git_status` from that same pane,
+  and names the space after that repository or directory, renaming it when the
+  pane moves. Space tokens answer where a space lives, not what it is.
+- Derive remote sessions from `pane.process_info`, never from a typed command
+  line. The shell integration only triggers a sync and passes no values.
+- Sequence every metadata report with the current epoch milliseconds so a slow
+  background sync cannot overwrite a newer one.
+- Report absent values as `null` so stale tokens clear instead of lingering.
+- Keep every Space two rows tall. Herdr hides a row whose tokens are all empty
+  and trims whitespace out of metadata, so report the braille-blank `pad`
+  token whenever nothing else, including Herdr's own branch, would render.
 - Use injected context and opaque IDs. Never infer workspace, tab, or pane IDs.
 - In Rust, represent protocol methods and payloads with serializable types,
   report malformed/error responses clearly, and consult `herdr api schema`
