@@ -14,25 +14,25 @@ platforms = ["macos"]
 # new server restores a session, so without this the second Space row stays
 # empty until something reports again.
 [[startup]]
-command = ["./target/release/herdr-cast", "sync-spaces"]
+command = ["herdr-cast", "sync-spaces"]
 
 # Fire a native notification whenever a pane's agent status changes. The
 # handler filters to the hard-coded blocked and done statuses.
 [[events]]
 on = "pane.agent_status_changed"
-command = ["./target/release/herdr-cast", "notify"]
+command = ["herdr-cast", "notify"]
 
 # Label a Space as soon as it exists.
 [[events]]
 on = "workspace.created"
-command = ["./target/release/herdr-cast", "sync-space"]
+command = ["herdr-cast", "sync-space"]
 
 # Catch anything the shell integration missed, such as a remote session
 # started outside an interactive prompt. `pane.updated` would be the precise
 # signal, but Herdr withholds it from plugin hooks as a high-volume event.
 [[events]]
 on = "workspace.focused"
-command = ["./target/release/herdr-cast", "sync-space"]
+command = ["herdr-cast", "sync-space"]
 
 # A searchable popup palette for layout operations on the focused pane.
 [[panes]]
@@ -42,7 +42,7 @@ platforms = ["macos"]
 placement = "popup"
 width = 44
 height = 7
-command = ["./target/release/herdr-cast", "palette"]
+command = ["herdr-cast", "palette"]
 
 # Fuzzy-select a zoxide-ranked directory and create a workspace there.
 #
@@ -57,7 +57,7 @@ platforms = ["macos"]
 placement = "popup"
 width = "37%"
 height = "33%"
-command = ["./target/release/herdr-cast", "directory-workspace"]
+command = ["herdr-cast", "directory-workspace"]
 
 # Fuzzy-select and focus any workspace in the current Herdr session.
 # See the sizing note above: config.toml opens this via `open-popup` too.
@@ -68,4 +68,4 @@ platforms = ["macos"]
 placement = "popup"
 width = "37%"
 height = "33%"
-command = ["./target/release/herdr-cast", "workspace-picker"]
+command = ["herdr-cast", "workspace-picker"]

@@ -283,8 +283,8 @@ that hand the terminal to another machine, because the remote process does not
 exist yet when it runs.
 
 ```sh
-cast=~/code/src/github.com/aliou/herdr-cast/target/release/herdr-cast
-[[ -x $cast ]] && eval "$($cast shell-init zsh)"
+cast=herdr-cast
+command -v $cast >/dev/null && eval "$($cast shell-init zsh)"
 ```
 
 The snippet points at the binary that printed it and does nothing outside a
@@ -320,9 +320,13 @@ nix-shell -p cargo rustc --run 'cargo test'
 nix-shell -p cargo rustc --run 'cargo build --release'
 ```
 
-The linked plugin executes `target/release/herdr-cast` directly, so Rust
-changes require a release rebuild but not a relink. Manifest changes require a
-registration refresh or a newly loaded Herdr server.
+The linked plugin resolves `herdr-cast` through `PATH`, so it runs whatever
+binary that name resolves to for the Herdr server's process — a Nix-installed
+build by default, or a local `target/release/herdr-cast` placed earlier on
+`PATH` for testing. Rust changes require a release rebuild; they don't need a
+relink or `PATH` change unless you're switching which binary is active.
+Manifest changes require a registration refresh or a newly loaded Herdr
+server.
 
 ## License
 

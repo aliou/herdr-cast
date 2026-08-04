@@ -108,6 +108,9 @@ injected state directory, never in the source checkout.
 ## Development behavior
 
 - Rust changes require rebuilding `target/release/herdr-cast`; do not relink.
+  The plugin resolves the `herdr-cast` command through `PATH`, so a local
+  build only takes effect if its directory precedes the Nix-installed
+  `herdr-cast` on the Herdr server's `PATH`.
 - `herdr plugin link` does not run manifest `[[build]]` commands.
 - Manifest changes require registration refresh or a newly loaded server to be
   observed. Test them with the temporary-id workflow above, not by disturbing
