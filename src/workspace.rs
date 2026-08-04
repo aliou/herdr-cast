@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
 use crate::picker::{pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker, ToggleKind};
+use crate::space;
 use crate::zoxide::{self, RankedDirectory};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
@@ -347,7 +348,13 @@ fn workspace_tree_choices(
 }
 
 fn workspace_choice(workspace: WorkspaceInfo) -> Choice<FocusTarget> {
-    let mut metadata = vec![format!("#{}", workspace.number)];
+    // Where a space lives leads, as it does in the sidebar, where the same
+    // tokens sit directly under the name.
+    let mut metadata = Vec::new();
+    if let Some(location) = space::describe(&workspace.tokens) {
+        metadata.push(location);
+    }
+    metadata.push(format!("#{}", workspace.number));
     if workspace.focused {
         metadata.push("current".to_string());
     }
@@ -541,16 +548,37 @@ mod tests {
             pane_count: 2,
             tab_count: 1,
             agent_status: "working".into(),
-            tokens: BTreeMap::from([("branch".into(), "main".into())]),
+            tokens: BTreeMap::from([("org".into(), "378".into())]),
             worktree: Some(WorkspaceWorktreeInfo {
                 checkout_path: "/tmp/herdr-cast".into(),
             }),
         });
         assert_eq!(choice.value, FocusTarget::Workspace("w:opaque".into()));
         assert!(choice.search_text.contains("cast"));
-        assert!(choice.search_text.contains("main"));
+        assert!(choice.search_text.contains("378"));
         assert!(choice.search_text.contains("/tmp/herdr-cast"));
         assert!(choice.detail.unwrap().contains("current"));
+    }
+
+    #[test]
+    fn a_workspace_leads_with_where_it_lives() {
+        let mut remote = workspace("w:sbx", "tmp");
+        remote.tokens = BTreeMap::from([
+            ("host".into(), "copper-eva-stratt".into()),
+            ("hostkind".into(), "sbx".into()),
+            ("pad".into(), "\u{2800}".into()),
+        ]);
+        let detail = workspace_choice(remote).detail.unwrap();
+        assert!(
+            detail.starts_with("sbx \u{b7} copper-eva-stratt \u{b7} #1"),
+            "detail: {detail}"
+        );
+        assert!(!detail.contains('\u{2800}'), "detail: {detail}");
+
+        let plain = workspace_choice(workspace("w:plain", "herdr-cast"))
+            .detail
+            .unwrap();
+        assert!(plain.starts_with("#1"), "detail: {plain}");
     }
 
     #[test]

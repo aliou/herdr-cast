@@ -89,6 +89,8 @@ JSON request/response contract.
 - `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
   `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
   `pane.process_info`, and prints the zsh integration that triggers a sync.
+  `space::describe` renders those tokens for one-line surfaces such as the
+  workspace picker.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order.
@@ -157,6 +159,8 @@ runtime invocation.
 - Keep every Space two rows tall. Herdr hides a row whose tokens are all empty
   and trims whitespace out of metadata, so report the braille-blank `pad`
   token whenever nothing else, including Herdr's own branch, would render.
+- Render Space tokens through `space::describe` everywhere outside the
+  sidebar, so the picker and the sidebar cannot drift apart.
 - Use injected context and opaque IDs. Never infer workspace, tab, or pane IDs.
 - In Rust, represent protocol methods and payloads with serializable types,
   report malformed/error responses clearly, and consult `herdr api schema`

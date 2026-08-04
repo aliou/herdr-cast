@@ -55,6 +55,11 @@ const PAD_TOKEN: &str = "pad";
 /// character that prints as nothing without being whitespace.
 const PAD_VALUE: &str = "\u{2800}";
 
+/// The order the sidebar row lists reported tokens in, and the separator
+/// Herdr puts between them.
+const LOCATION_TOKENS: [&str; 4] = [HOST_KIND_TOKEN, HOST_TOKEN, ORG_TOKEN, REPOS_TOKEN];
+const TOKEN_SEPARATOR: &str = " \u{b7} ";
+
 /// Which organization or client owns a path, keyed by its root below `$HOME`.
 /// `None` takes the first path segment below that root as the name, which is
 /// how per-client directories work. Keep this aligned with the shell prompt.
@@ -199,6 +204,19 @@ pub fn sync_all() -> Result<(), String> {
 
 /// Print the shell integration. The snippet points at this exact binary, so a
 /// moved or rebuilt checkout never leaves a stale path behind.
+/// Renders a space's reported tokens the way the sidebar renders its second
+/// row, for surfaces that show a space on one line. Keeps the picker and the
+/// sidebar reading the same, since both answer where a space lives.
+pub fn describe(tokens: &BTreeMap<String, String>) -> Option<String> {
+    let parts = LOCATION_TOKENS
+        .iter()
+        .filter_map(|key| tokens.get(*key))
+        .map(String::as_str)
+        .filter(|value| !value.is_empty())
+        .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(TOKEN_SEPARATOR))
+}
+
 pub fn shell_init(shell: &str) -> Result<(), String> {
     if shell != "zsh" {
         return Err(format!("unsupported shell {shell}; expected zsh"));
@@ -669,6 +687,28 @@ mod tests {
         assert_eq!(cleared.get(HOST_TOKEN), Some(&None));
         assert_eq!(cleared.get(HOST_KIND_TOKEN), Some(&None));
         assert_eq!(cleared.get(PAD_TOKEN), Some(&None));
+    }
+
+    #[test]
+    fn a_description_reads_like_the_sidebar_row() {
+        let described = |pairs: &[(&str, &str)]| {
+            describe(
+                &pairs
+                    .iter()
+                    .map(|(key, value)| (key.to_string(), value.to_string()))
+                    .collect(),
+            )
+        };
+        assert_eq!(
+            described(&[("host", "copper-eva-stratt"), ("hostkind", "sbx")]).as_deref(),
+            Some("sbx \u{b7} copper-eva-stratt")
+        );
+        assert_eq!(
+            described(&[("repos", "11 repos"), ("org", "378")]).as_deref(),
+            Some("378 \u{b7} 11 repos")
+        );
+        assert_eq!(described(&[("pad", PAD_VALUE)]), None, "pad prints nothing");
+        assert_eq!(described(&[]), None);
     }
 
     #[test]

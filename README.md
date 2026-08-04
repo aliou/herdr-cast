@@ -72,6 +72,8 @@ The workspace picker opens with `prefix+space` in the local Herdr config.
 - Working agents use an animated braille gutter indicator and a static yellow
   status label.
 - The current-pane diamond takes precedence over the working animation.
+- Workspace rows lead with the same location the sidebar shows, so a sandbox
+  reads `tmp (1)  sbx \u00b7 copper-eva-stratt  \u00b7 #4 \u00b7 1 pane`.
 - Selecting a workspace or pane focuses it through Herdr's socket API.
 
 Search covers workspace labels, pane titles, opaque ids, agent names and
@@ -119,6 +121,9 @@ custom workspace tokens to fill that row:
   hides a row whose tokens are all empty and trims whitespace out of metadata
   values, so holding the row open takes a character that prints as nothing
   without being whitespace. Every Space then keeps the same height.
+
+The workspace picker renders the same tokens in the same order, so a Space
+reads the same in the sidebar and in the popup.
 
 Nothing here repeats the Space name. Herdr names a Space after the repository
 or directory its root pane sits in and renames it when that pane moves, so the
