@@ -145,6 +145,14 @@ because Herdr drops metadata tokens when a new server restores a session;
 integration below. Herdr withholds `pane.updated`, its own live signal, from
 plugin hooks as a high-volume event.
 
+### Terminal window title
+
+Cast sets Herdr's foreground client window title to the focused Space label on
+`workspace.focused`, and refreshes it when that focused Space is renamed.
+Herdr sends this as an OSC title update to the attached terminal client. The
+title is client/window state, not per-workspace state, so Cast reapplies it on
+focus changes rather than storing title state of its own.
+
 ### Layout palette
 
 The layout palette opens with `prefix+p` in the local Herdr config. It provides:

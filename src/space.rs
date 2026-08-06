@@ -117,10 +117,16 @@ struct WorkspaceReportMetadataParams {
     seq: u64,
 }
 
+#[derive(Serialize)]
+struct ClientWindowTitleSetParams {
+    title: String,
+}
+
 #[derive(Debug, Deserialize)]
 struct WorkspaceInfo {
     workspace_id: String,
     label: String,
+    focused: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +206,22 @@ pub fn sync_all() -> Result<(), String> {
         return Ok(());
     }
     Err(failures.join("; "))
+}
+
+/// Set the foreground Herdr client window title to the focused workspace label.
+///
+/// The event may name a workspace that is not focused, such as a background
+/// workspace rename. In that case, leave the foreground terminal title alone.
+pub fn sync_title() -> Result<(), String> {
+    let Some(workspace_id) = current_workspace_id() else {
+        return Ok(());
+    };
+    let client = socket_client()?;
+    let workspace = workspace_info(&client, &workspace_id)?;
+    if !workspace.focused {
+        return Ok(());
+    }
+    set_client_window_title(&client, &workspace.label)
 }
 
 /// Print the shell integration. The snippet points at this exact binary, so a
@@ -544,7 +566,7 @@ fn list_workspaces(client: &SocketClient) -> Result<Vec<WorkspaceInfo>, String> 
     .map_err(|error| format!("failed to parse workspace.list response: {error}"))
 }
 
-fn workspace_label(client: &SocketClient, workspace_id: &str) -> Result<String, String> {
+fn workspace_info(client: &SocketClient, workspace_id: &str) -> Result<WorkspaceInfo, String> {
     let response = client.send(
         "cast:workspace-get",
         "workspace.get",
@@ -552,11 +574,29 @@ fn workspace_label(client: &SocketClient, workspace_id: &str) -> Result<String, 
             workspace_id: workspace_id.to_string(),
         },
     )?;
-    response
-        .pointer("/result/workspace/label")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .ok_or_else(|| "workspace.get missing label".to_string())
+    serde_json::from_value(
+        response
+            .pointer("/result/workspace")
+            .cloned()
+            .ok_or_else(|| "workspace.get missing workspace".to_string())?,
+    )
+    .map_err(|error| format!("failed to parse workspace.get response: {error}"))
+}
+
+fn workspace_label(client: &SocketClient, workspace_id: &str) -> Result<String, String> {
+    workspace_info(client, workspace_id).map(|workspace| workspace.label)
+}
+
+fn set_client_window_title(client: &SocketClient, title: &str) -> Result<(), String> {
+    client
+        .send(
+            "cast:client-window-title-set",
+            "client.window_title.set",
+            ClientWindowTitleSetParams {
+                title: title.to_string(),
+            },
+        )
+        .map(|_| ())
 }
 
 /// Plugin hooks carry the workspace in their event payload; shell hooks only
@@ -672,6 +712,19 @@ mod tests {
                     "pad": null
                 },
                 "seq": 17
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_title_request_matches_the_installed_protocol() {
+        let request = ClientWindowTitleSetParams {
+            title: "project".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            serde_json::json!({
+                "title": "project"
             })
         );
     }

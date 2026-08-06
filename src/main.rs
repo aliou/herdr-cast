@@ -21,6 +21,7 @@ fn main() {
             (Some("--await-remote"), None) => space::sync(true),
             _ => Err("usage: herdr-cast sync-space [--await-remote]".to_string()),
         },
+        Some("sync-title") if arguments.next().is_none() => space::sync_title(),
         Some("sync-spaces") if arguments.next().is_none() => space::sync_all(),
         Some("shell-init") => match (arguments.next(), arguments.next()) {
             (Some(shell), None) => space::shell_init(&shell),
@@ -41,7 +42,7 @@ fn main() {
         }
         _ => Err(concat!(
             "usage: herdr-cast <notify|palette|directory-workspace|workspace-picker",
-            "|sync-space|sync-spaces|shell-init|open-popup|focus>"
+            "|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
     };
