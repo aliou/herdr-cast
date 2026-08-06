@@ -41,7 +41,7 @@ title = "Layout palette"
 platforms = ["macos"]
 placement = "popup"
 width = 44
-height = 7
+height = 10
 command = ["herdr-cast", "palette"]
 
 # Fuzzy-select a zoxide-ranked directory and create a workspace there.

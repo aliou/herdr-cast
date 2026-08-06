@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::io::{self, Write};
 
 use crate::api::SocketClient;
 use crate::picker::{pick, Choice, Picker};
@@ -14,6 +15,44 @@ struct PaneMoveParams {
     pane_id: String,
     destination: PaneMoveDestination,
     focus: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct PaneTargetParams {
+    pane_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkspaceTargetParams {
+    workspace_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TabTargetParams {
+    tab_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct WorkspaceRenameParams {
+    workspace_id: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct TabRenameParams {
+    tab_id: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ClientWindowTitleSetParams {
+    title: String,
+}
+
+#[derive(Debug, Clone)]
+struct CurrentLocation {
+    workspace_id: String,
+    tab_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -79,6 +118,9 @@ pub fn run() -> Result<(), String> {
         LayoutAction::MoveToNewWorkspace => {
             move_to_new_workspace(&client, &pane_id, true).map(|_| ())
         }
+        LayoutAction::RenameTab => rename_current_tab(&client, &pane_id),
+        LayoutAction::RenameWorkspace => rename_current_workspace(&client, &pane_id),
+        LayoutAction::SetTerminalTitle => set_terminal_title(&client, &pane_id),
     }
 }
 
@@ -128,6 +170,131 @@ fn pane_move(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| "pane.move missing resulting pane id".to_string())
+}
+
+fn current_location(client: &SocketClient, pane_id: &str) -> Result<CurrentLocation, String> {
+    let response = client.send(
+        "cast:pane-get",
+        "pane.get",
+        PaneTargetParams {
+            pane_id: pane_id.to_owned(),
+        },
+    )?;
+    let pane = response
+        .pointer("/result/pane")
+        .ok_or_else(|| "pane.get missing pane".to_string())?;
+    let workspace_id = pane
+        .get("workspace_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "pane.get missing workspace_id".to_string())?
+        .to_owned();
+    let tab_id = pane
+        .get("tab_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "pane.get missing tab_id".to_string())?
+        .to_owned();
+    Ok(CurrentLocation {
+        workspace_id,
+        tab_id,
+    })
+}
+
+fn workspace_label(client: &SocketClient, workspace_id: &str) -> Result<String, String> {
+    let response = client.send(
+        "cast:workspace-get",
+        "workspace.get",
+        WorkspaceTargetParams {
+            workspace_id: workspace_id.to_owned(),
+        },
+    )?;
+    response
+        .pointer("/result/workspace/label")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "workspace.get missing label".to_string())
+}
+
+fn tab_label(client: &SocketClient, tab_id: &str) -> Result<String, String> {
+    let response = client.send(
+        "cast:tab-get",
+        "tab.get",
+        TabTargetParams {
+            tab_id: tab_id.to_owned(),
+        },
+    )?;
+    response
+        .pointer("/result/tab/label")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| "tab.get missing label".to_string())
+}
+
+fn read_label(prompt: &str, current: &str) -> Result<Option<String>, String> {
+    print!("{prompt} [{current}]: ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("failed to flush prompt: {error}"))?;
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .map_err(|error| format!("failed to read label: {error}"))?;
+    let label = input.trim().to_string();
+    if label.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(label))
+    }
+}
+
+fn rename_current_workspace(client: &SocketClient, pane_id: &str) -> Result<(), String> {
+    let location = current_location(client, pane_id)?;
+    let current = workspace_label(client, &location.workspace_id)?;
+    let Some(label) = read_label("Workspace name", &current)? else {
+        return Ok(());
+    };
+    client
+        .send(
+            "cast:workspace-rename",
+            "workspace.rename",
+            WorkspaceRenameParams {
+                workspace_id: location.workspace_id,
+                label,
+            },
+        )
+        .map(|_| ())
+}
+
+fn rename_current_tab(client: &SocketClient, pane_id: &str) -> Result<(), String> {
+    let location = current_location(client, pane_id)?;
+    let current = tab_label(client, &location.tab_id)?;
+    let Some(label) = read_label("Tab name", &current)? else {
+        return Ok(());
+    };
+    client
+        .send(
+            "cast:tab-rename",
+            "tab.rename",
+            TabRenameParams {
+                tab_id: location.tab_id,
+                label,
+            },
+        )
+        .map(|_| ())
+}
+
+fn set_terminal_title(client: &SocketClient, pane_id: &str) -> Result<(), String> {
+    let location = current_location(client, pane_id)?;
+    let current = workspace_label(client, &location.workspace_id)?;
+    let Some(title) = read_label("Terminal title", &current)? else {
+        return Ok(());
+    };
+    client
+        .send(
+            "cast:client-window-title-set",
+            "client.window_title.set",
+            ClientWindowTitleSetParams { title },
+        )
+        .map(|_| ())
 }
 
 fn move_to_new_workspace(
@@ -262,6 +429,9 @@ enum LayoutAction {
     FlipSplit,
     MoveToNewTab,
     MoveToNewWorkspace,
+    RenameTab,
+    RenameWorkspace,
+    SetTerminalTitle,
 }
 
 fn choose_action() -> Result<Option<LayoutAction>, String> {
@@ -289,6 +459,24 @@ fn choose_action() -> Result<Option<LayoutAction>, String> {
                 "Move pane to new workspace",
                 Some("Detach and focus the selected pane in a new workspace"),
                 "move pane detach new workspace",
+            ),
+            Choice::new(
+                LayoutAction::RenameTab,
+                "Rename current tab",
+                Some("Set a custom label for the tab containing the focused pane"),
+                "rename current tab label",
+            ),
+            Choice::new(
+                LayoutAction::RenameWorkspace,
+                "Rename current workspace",
+                Some("Set a custom label for the workspace containing the focused pane"),
+                "rename current workspace label",
+            ),
+            Choice::new(
+                LayoutAction::SetTerminalTitle,
+                "Rename Terminal title for current workspace",
+                Some("Set the foreground Herdr client window title; Herdr does not store this per workspace"),
+                "rename terminal title current workspace client window title",
             ),
         ],
     )
@@ -388,6 +576,52 @@ mod tests {
                     "workspace_id": null
                 },
                 "focus": true
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_rename_request_uses_the_current_protocol_shape() {
+        let params = WorkspaceRenameParams {
+            workspace_id: "w1".into(),
+            label: "new name".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({
+                "workspace_id": "w1",
+                "label": "new name"
+            })
+        );
+    }
+
+    #[test]
+    fn tab_rename_request_uses_the_current_protocol_shape() {
+        let params = TabRenameParams {
+            tab_id: "t1".into(),
+            label: "new tab".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({
+                "tab_id": "t1",
+                "label": "new tab"
+            })
+        );
+    }
+
+    #[test]
+    fn terminal_title_request_uses_the_current_protocol_shape() {
+        let params = ClientWindowTitleSetParams {
+            title: "project".into(),
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({
+                "title": "project"
             })
         );
     }

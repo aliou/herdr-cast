@@ -155,6 +155,12 @@ The layout palette opens with `prefix+p` in the local Herdr config. It provides:
   current workspace and focuses it.
 - **Move pane to new workspace:** detaches the focused pane, creates a
   workspace, moves the pane there, and focuses it.
+- **Rename current tab:** sets a custom label for the tab containing the
+  focused pane.
+- **Rename current workspace:** sets a custom label for the workspace
+  containing the focused pane.
+- **Rename Terminal title for current workspace:** sets the foreground Herdr
+  client window title. Herdr does not store this as per-workspace title state.
 
 Split flipping rejects nested layouts and attempts to restore the original
 layout if the second move fails.
