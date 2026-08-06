@@ -38,11 +38,23 @@ pub enum ChoiceStatus {
     Unknown,
 }
 
+/// Which matcher a choice uses when the user types a query.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MatchKind {
+    /// Subsequence fuzzy matcher with boundary bonuses (this picker's default).
+    Fuzzy,
+    /// zoxide's keyword matcher: ordered substring keywords, last keyword must
+    /// match the last path component, case-insensitive.
+    Zoxide,
+}
+
 pub struct Choice<T> {
     pub value: T,
     pub title: String,
     pub detail: Option<String>,
     pub search_text: String,
+    match_text: Option<String>,
+    match_kind: MatchKind,
     parent: Option<usize>,
     tree_root: bool,
     status: Option<ChoiceStatus>,
@@ -71,6 +83,8 @@ impl<T> Choice<T> {
             title: title.into(),
             detail: detail.map(Into::into),
             search_text: search_text.into(),
+            match_text: None,
+            match_kind: MatchKind::Fuzzy,
             parent: None,
             tree_root: false,
             status: None,
@@ -153,6 +167,16 @@ impl<T> Choice<T> {
         self.preserve_primary_order_in_search = true;
         self
     }
+
+    pub fn match_kind(mut self, kind: MatchKind) -> Self {
+        self.match_kind = kind;
+        self
+    }
+
+    pub fn with_match_text(mut self, text: impl Into<String>) -> Self {
+        self.match_text = Some(text.into());
+        self
+    }
 }
 
 pub struct Picker<'a> {
@@ -233,7 +257,12 @@ impl PickerState {
                 .into_iter()
                 .filter_map(|index| {
                     let choice = &choices[index];
-                    fuzzy_score(&choice.search_text, &self.query).map(|score| (index, score))
+                    if !self.alternate_order && choice.match_kind == MatchKind::Zoxide {
+                        let text = choice.match_text.as_deref().unwrap_or(&choice.search_text);
+                        crate::zoxide::keywords_match(text, &self.query).then_some((index, 0))
+                    } else {
+                        fuzzy_score(&choice.search_text, &self.query).map(|score| (index, score))
+                    }
                 })
                 .collect::<Vec<_>>();
             let prioritize_alternate = self.alternate_order

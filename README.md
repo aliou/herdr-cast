@@ -94,7 +94,9 @@ The directory picker opens with `prefix+shift+c` in the local Herdr config.
   the full tilde path visible.
 - Opens in zoxide mode. Press `Tab` to toggle zoxide and alphabetical modes for
   the current invocation.
-- Zoxide mode keeps frecency order while filtering and displays scores inline.
+- Zoxide mode filters with zoxide's keyword matcher and displays frecency scores
+  inline: all keywords must appear in order, and the last keyword must match
+  the last path component.
 - Alphabetical mode hides scores and fuzzy-ranks filtered results.
 - A teal diamond marks directories already represented by a Herdr workspace.
 - Selecting a marked directory focuses its workspace instead of creating a

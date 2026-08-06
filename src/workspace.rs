@@ -304,7 +304,7 @@ fn directory_choice(
     let search = format!("{} {}", directory.label, directory.display_path);
     let target = existing
         .map(|workspace| DirectoryTarget::Focus(workspace.workspace_id.clone()))
-        .unwrap_or_else(|| DirectoryTarget::Create(directory.path));
+        .unwrap_or_else(|| DirectoryTarget::Create(directory.path.clone()));
     Choice::new(
         target,
         directory.label,
@@ -316,6 +316,8 @@ fn directory_choice(
     .with_primary_suffix(format!("{:.0}", directory.score))
     .highlighted(existing.is_some())
     .preserve_primary_order_in_search()
+    .match_kind(crate::picker::MatchKind::Zoxide)
+    .with_match_text(directory.path.to_string_lossy())
 }
 
 fn workspace_tree_choices(

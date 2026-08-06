@@ -131,6 +131,45 @@ fn parse_scores(output: &str) -> Vec<(f64, PathBuf)> {
         .collect()
 }
 
+/// Mirrors zoxide's keyword matcher (src/db/stream.rs).
+///
+/// All keywords must appear in order within the path. The last keyword must
+/// match the final path component (nothing after it may be a path separator).
+/// Matching is case-insensitive.
+pub fn keywords_match(path: &str, query: &str) -> bool {
+    let keywords: Vec<&str> = query.split_whitespace().collect();
+    let (last, keywords) = match keywords.split_last() {
+        Some(split) => split,
+        None => return true,
+    };
+    if last.is_empty() {
+        return true;
+    }
+
+    let path = path.to_lowercase();
+    let mut path = path.as_str();
+    match path.rfind(&last.to_lowercase()) {
+        Some(idx) => {
+            if path[idx + last.len()..].contains(std::path::is_separator) {
+                return false;
+            }
+            path = &path[..idx];
+        }
+        None => return false,
+    }
+
+    for keyword in keywords.iter().rev() {
+        if keyword.is_empty() {
+            continue;
+        }
+        match path.rfind(&keyword.to_lowercase()) {
+            Some(idx) => path = &path[..idx],
+            None => return false,
+        }
+    }
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +183,34 @@ mod tests {
                 (12.5, PathBuf::from("/tmp/a project"))
             ]
         );
+    }
+
+    #[test]
+    fn zoxide_keyword_matcher_matches_in_order_with_last_component_rule() {
+        // Case-insensitive substring of the last component.
+        assert!(keywords_match("/foo/bar", "ba"));
+        assert!(keywords_match("/FOO/BAR", "ba"));
+        // Last component must be the final segment.
+        assert!(!keywords_match("/bar/foo", "ba"));
+        // In-order keywords across components.
+        assert!(keywords_match("/foo/bar", "fo ba"));
+        assert!(!keywords_match("/bar/foo", "fo ba"));
+        // Slash-aware: "foo/" must sit right before a separator.
+        assert!(!keywords_match("/foo", "foo/"));
+        assert!(keywords_match("/foo/bar", "foo/"));
+        assert!(!keywords_match("/foo/bar/baz", "foo/"));
+        // "foo /" is equivalent and the trailing slash is optional.
+        assert!(!keywords_match("/foo", "foo /"));
+        assert!(keywords_match("/foo/bar", "foo /"));
+        assert!(keywords_match("/foo/bar/baz", "foo /"));
+        // Split components with explicit separators.
+        assert!(keywords_match("/foo/bar", "/ fo / ar"));
+        // Keyword can span an existing slash.
+        assert!(keywords_match("/foo/bar", "oo/ba"));
+        // Overlap between adjacent keywords must be real (zoxide tests).
+        assert!(!keywords_match("/foo/bar", "foo o bar"));
+        assert!(!keywords_match("/foo/bar", "/foo/ /bar"));
+        assert!(keywords_match("/foo/baz/bar", "/foo/ /bar"));
     }
 
     #[test]
