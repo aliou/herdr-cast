@@ -74,7 +74,7 @@ JSON request/response contract.
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
 - `src/main.rs`: dispatches the Rust binary's `notify`, `palette`, `focus`,
-  `sync-space`, `sync-spaces`, and `shell-init` commands.
+  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, macOS frontmost-app detection, notifier registration,
@@ -194,6 +194,22 @@ disposable named session.
 After runtime validation, inspect the temporary session's plugin logs and state,
 record the Herdr version and observed result, then perform the skill's full
 cleanup procedure.
+
+## CI binaries
+
+`Cargo.lock` is tracked because this binary is built by GitHub Actions.
+Keep it current when `Cargo.toml` dependencies change.
+
+`.github/workflows/ci.yml` builds these binaries on every push and pull
+request:
+
+- `herdr-cast-darwin-arm64`
+- `herdr-cast-linux-arm64`
+- `herdr-cast-linux-x64`
+
+Linux artifacts target musl so NixOS consumers can fetch and run them without
+patching a dynamic loader. Each workflow artifact has a matching `.sha256` file
+with a Nix-compatible hash for downstream package definitions.
 
 ## Documentation triggers
 

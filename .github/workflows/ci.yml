@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        run: rustup component add rustfmt
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Format
+        run: cargo fmt -- --check
+
+      - name: Test
+        run: cargo test
+
+  binaries:
+    name: Build ${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            artifact: herdr-cast-darwin-arm64
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact: herdr-cast-linux-x64
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact: herdr-cast-linux-arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install musl toolchain
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Test target
+        run: cargo test --target ${{ matrix.target }}
+
+      - name: Build target
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Stage artifact
+        run: |
+          set -euo pipefail
+          cp "target/${{ matrix.target }}/release/herdr-cast" "${{ matrix.artifact }}"
+          chmod +x "${{ matrix.artifact }}"
+
+      - name: Compute the nix hash
+        run: |
+          set -euo pipefail
+          HASH="sha256-$(openssl dgst -binary -sha256 '${{ matrix.artifact }}' | openssl base64 -A)"
+          echo "$HASH" > "${{ matrix.artifact }}.sha256"
+          echo "$HASH"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: |
+            ${{ matrix.artifact }}
+            ${{ matrix.artifact }}.sha256

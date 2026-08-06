@@ -308,8 +308,8 @@ Herdr's API.
 ## Architecture
 
 - `src/main.rs` dispatches the `notify`, `focus`, `palette`,
-  `directory-workspace`, `workspace-picker`, `sync-space`, `sync-spaces`, and
-  `shell-init` commands.
+  `directory-workspace`, `workspace-picker`, `sync-space`, `sync-title`,
+  `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, macOS focus detection,
@@ -341,6 +341,18 @@ build by default, or a local `target/release/herdr-cast` placed earlier on
 relink or `PATH` change unless you're switching which binary is active.
 Manifest changes require a registration refresh or a newly loaded Herdr
 server.
+
+## CI binaries
+
+GitHub Actions builds binaries on every push and pull request for:
+
+- `herdr-cast-darwin-arm64`
+- `herdr-cast-linux-arm64`
+- `herdr-cast-linux-x64`
+
+The CI workflow uploads each binary as a workflow artifact with a `.sha256`
+file containing the Nix-compatible `sha256-...` hash. Linux binaries target
+musl so they run on NixOS without a dynamic loader patch.
 
 ## License
 
