@@ -2,10 +2,10 @@
 
 ## Purpose and risk
 
-This repository is a custom, unpublished Herdr plugin for Aliou's local macOS
-setup. Its plugin id is `ad.cast`. It is already linked, enabled, and loaded
-from this checkout on this machine; linked plugins are global to the local
-user and available to every Herdr session.
+This repository is a custom, unpublished Herdr plugin for Aliou's local setup.
+It runs on macOS and Linux. Its plugin id is `ad.cast`. It is already linked,
+enabled, and loaded from this checkout on this machine; linked plugins are
+global to the local user and available to every Herdr session.
 
 Do not run `herdr plugin link`, `herdr plugin unlink`, `herdr plugin install`,
 `herdr plugin uninstall`, or change the plugin's enabled state unless the user
@@ -64,9 +64,9 @@ this before adding or changing raw socket requests, response parsing, event
 payload assumptions, or plugin context fields. Do not copy the schema into this
 repository or rely on a remembered shape.
 
-This macOS-only plugin deliberately talks to `HERDR_SOCKET_PATH` directly. Keep
-raw requests aligned with the current schema and preserve the newline-delimited
-JSON request/response contract.
+This plugin deliberately talks to `HERDR_SOCKET_PATH` directly. Keep raw
+requests aligned with the current schema and preserve the newline-delimited JSON
+request/response contract.
 
 ## Repository map
 
@@ -77,8 +77,9 @@ JSON request/response contract.
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
-  state, Herdr enrichment, macOS frontmost-app detection, notifier registration,
-  delivery, and click-to-focus.
+  state, Herdr enrichment, macOS frontmost-app detection, macOS notifier
+  registration and delivery, Linux terminal notification requests, and macOS
+  click-to-focus.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a split or move the focused pane to a new workspace.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
@@ -115,9 +116,9 @@ injected state directory, never in the source checkout.
 - Manifest changes require registration refresh or a newly loaded server to be
   observed. Test them with the temporary-id workflow above, not by disturbing
   `ad.cast` in the current session.
-- The `notify` command refreshes Launch Services registration on a six-hour
-  TTL. Re-signing can change the app identity and reset the macOS notification
-  grant, so preserve verify-before-sign behavior.
+- On macOS, the `notify` command refreshes Launch Services registration on a
+  six-hour TTL. Re-signing can change the app identity and reset the macOS
+  notification grant, so preserve verify-before-sign behavior.
 
 Useful discovery and diagnostics commands include:
 
@@ -141,12 +142,16 @@ runtime invocation.
 - Keep Herdr enrichment and macOS focus detection best-effort. Detection
   failures must fail open so a duplicate notification is preferred over a
   silently missed notification.
+- On non-macOS platforms, request terminal notifications through Herdr's
+  `notification.show` socket method with `sound = "none"`. Do not write OSC
+  directly to a pane PTY; Herdr owns the client notification path.
 - `terminal-notifier -execute` evaluates one command string through the system
   shell. Keep every generated argument single-quoted and unit-test paths and
   pane IDs containing spaces, quotes, and shell metacharacters.
 - Keep notification sound out of this plugin; it owns visual delivery only.
-- Preserve focused-workspace suppression: suppress only when both the Herdr
-  workspace is focused and a supported terminal app is frontmost.
+- Preserve macOS focused-workspace suppression: suppress only when both the
+  Herdr workspace is focused and a supported terminal app is frontmost. Linux
+  does not run this frontmost-app check.
 - Space metadata describes the first tab's root pane, which is the pane Herdr
   uses for a Space's own Git identity and the first entry `pane.list` returns
   for a workspace. Never relabel a Space from a secondary pane.

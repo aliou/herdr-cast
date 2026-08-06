@@ -1,9 +1,9 @@
 # Cast
 
 Cast is a collection of personal customizations for
-[Herdr](https://herdr.dev). It adds native macOS agent notifications,
-keyboard-first workspace navigation, zoxide-backed workspace creation, Space
-sidebar metadata, and a small layout command palette.
+[Herdr](https://herdr.dev). It adds agent notifications, keyboard-first
+workspace navigation, zoxide-backed workspace creation, Space sidebar
+metadata, and a small layout command palette.
 
 The plugin id is `ad.cast`. Source repository:
 [`aliou/herdr-cast`](https://github.com/aliou/herdr-cast). Cast is unpublished
@@ -35,24 +35,28 @@ Flip a two-pane split, then move a pane into a new workspace.
 
 ## Features
 
-### Native agent notifications
+### Agent notifications
 
-- Posts native macOS notifications for Herdr's `blocked` and `done` agent
-  statuses.
-- Uses the bundled, rebranded `HerdrNotify.app` with Herdr status artwork.
+- Posts notifications for Herdr's `blocked` and `done` agent statuses.
+- On macOS, uses the bundled, rebranded `HerdrNotify.app` with Herdr status
+  artwork.
+- On Linux, asks Herdr to show the notification through the attached terminal
+  client with sound disabled. Herdr handles the terminal notification path.
 - Includes the agent, workspace, and working-directory context.
 - Groups notifications by pane and debounces duplicate pane/status events for
   two seconds.
-- Suppresses a notification only when its Herdr workspace is focused and a
-  supported terminal is the frontmost macOS app.
-- Fails open when Herdr enrichment or frontmost-app detection is unavailable.
+- On macOS, suppresses a notification only when its Herdr workspace is focused
+  and a supported terminal is the frontmost app.
+- Fails open when Herdr enrichment or macOS frontmost-app detection is
+  unavailable.
 - Verifies the notifier signature before signing and refreshes Launch Services
-  registration on a six-hour TTL.
+  registration on a six-hour TTL on macOS.
 - Keeps sound out of the plugin so another integration can own audio playback.
 
 Clicking a notification raises Ghostty and asks Herdr to focus the exact pane
-from the original event. Event pane ids and workspace ids remain opaque; Cast
-does not substitute the currently focused pane.
+from the original event on macOS. Linux terminal notifications are not
+click-to-focus. Event pane ids and workspace ids remain opaque; Cast does not
+substitute the currently focused pane.
 
 ### Workspace and agent picker
 
@@ -207,8 +211,9 @@ paths or titles can run under it.
 
 ## Requirements
 
-- macOS 26 or newer
-- Herdr 0.7.0 or newer
+- macOS 26 or newer, or Linux with a terminal/client that supports Herdr
+  notifications
+- Herdr 0.8.0 or newer
 - `zoxide`
 - Rust and Cargo for local builds
 
@@ -223,21 +228,31 @@ nix-shell -p cargo rustc --run 'cargo build --release'
 herdr plugin link "$PWD"
 ```
 
-After the first notification event, grant notification access under **System
-Settings → Notifications → herdr → Allow**. The grant is tied to the bundled
-app's `codes.dot.herdr-notify` bundle id.
+On macOS, after the first notification event, grant notification access under
+**System Settings → Notifications → herdr → Allow**. The grant is tied to the
+bundled app's `codes.dot.herdr-notify` bundle id.
 
 This repository's local development checkout may already be linked. Do not
 relink it during routine development.
 
 ## Herdr configuration
 
-Cast owns native visual notifications. Keep Herdr's toast inside the TUI and
-leave sound to the integration that owns audio playback:
+Cast owns visual notifications and keeps sound disabled. On macOS it uses the
+bundled notifier, so keep Herdr's own toast inside the TUI:
 
 ```toml
 [ui.toast]
 delivery = "herdr"
+
+[ui.sound]
+enabled = false
+```
+
+On Linux, Cast asks Herdr to show notifications through the terminal client:
+
+```toml
+[ui.toast]
+delivery = "terminal"
 
 [ui.sound]
 enabled = false
@@ -313,14 +328,15 @@ Herdr's API.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, macOS focus detection,
-  notifier registration, delivery, and click-to-focus behavior.
+  macOS notifier registration and delivery, Linux terminal notification
+  requests, and macOS click-to-focus behavior.
 - `src/picker.rs` provides the reusable fuzzy picker and rendering.
 - `src/palette.rs` implements layout actions.
 - `src/workspace.rs` implements workspace creation and workspace/pane focus.
 - `src/space.rs` reports Space sidebar metadata and prints the zsh
   integration.
 - `src/zoxide.rs` builds and orders directory candidates.
-- `assets/HerdrNotify.app` is the bundled notification application.
+- `assets/HerdrNotify.app` is the bundled macOS notification application.
 
 `herdr-plugin.toml` defines the startup hook, event subscriptions, pane
 entrypoints, popup sizes, and build command. Runtime artifacts live only in

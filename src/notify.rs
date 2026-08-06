@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api::SocketClient;
@@ -34,6 +34,14 @@ struct EventData {
     workspace_id: Option<String>,
     agent_status: Option<String>,
     agent: Option<String>,
+}
+
+#[derive(Serialize)]
+struct NotificationShowParams {
+    title: String,
+    body: Option<String>,
+    position: Option<String>,
+    sound: &'static str,
 }
 
 struct Paths {
@@ -95,11 +103,13 @@ pub fn run() -> Result<(), String> {
         .and_then(|name| name.to_str())
         .unwrap_or(&workspace);
 
-    if let (Some(client), Some(workspace_id)) = (client.as_ref(), workspace_id.as_deref()) {
-        if focused_workspace_id(client).as_deref() == Some(workspace_id) {
-            if let Some(frontmost) = frontmost_bundle_id() {
-                if TERMINAL_APP_IDS.contains(&frontmost.as_str()) {
-                    return Ok(());
+    if cfg!(target_os = "macos") {
+        if let (Some(client), Some(workspace_id)) = (client.as_ref(), workspace_id.as_deref()) {
+            if focused_workspace_id(client).as_deref() == Some(workspace_id) {
+                if let Some(frontmost) = frontmost_bundle_id() {
+                    if TERMINAL_APP_IDS.contains(&frontmost.as_str()) {
+                        return Ok(());
+                    }
                 }
             }
         }
@@ -108,20 +118,45 @@ pub fn run() -> Result<(), String> {
     if is_debounced(&paths.state, pane_id, &status)? {
         return Ok(());
     }
-    if !paths.notifier.is_file() {
-        log("bundled HerdrNotify.app executable is missing");
-        return Ok(());
-    }
-    if !ensure_notifier_registered(&paths) {
-        return Ok(());
-    }
-
     let (title, icon_name) = match status.as_str() {
         "blocked" => (format!("⏳ {agent} needs input"), "blocked.png"),
         "done" => (format!("✅ {agent} done"), "done.png"),
         _ => return Ok(()),
     };
     let body = format!("{workspace} · {worktree}");
+
+    if cfg!(target_os = "macos") {
+        deliver_macos_notification(
+            &paths,
+            socket_path.as_deref(),
+            pane_id,
+            title,
+            body,
+            icon_name,
+        )?;
+    } else {
+        deliver_terminal_notification(client.as_ref(), title, body);
+    }
+
+    Ok(())
+}
+
+fn deliver_macos_notification(
+    paths: &Paths,
+    socket_path: Option<&str>,
+    pane_id: &str,
+    title: String,
+    body: String,
+    icon_name: &str,
+) -> Result<(), String> {
+    if !paths.notifier.is_file() {
+        log("bundled HerdrNotify.app executable is missing");
+        return Ok(());
+    }
+    if !ensure_notifier_registered(paths) {
+        return Ok(());
+    }
+
     let icon = paths.root.join("assets/icons").join(icon_name);
 
     let mut args = vec![
@@ -159,13 +194,50 @@ pub fn run() -> Result<(), String> {
     Ok(())
 }
 
+fn deliver_terminal_notification(client: Option<&SocketClient>, title: String, body: String) {
+    let Some(client) = client else {
+        log("HERDR_SOCKET_PATH is not set; cannot request terminal notification");
+        return;
+    };
+
+    let response = client.send(
+        "cast:notification-show",
+        "notification.show",
+        NotificationShowParams {
+            title,
+            body: Some(body),
+            position: None,
+            sound: "none",
+        },
+    );
+    match response {
+        Ok(response) => {
+            let shown = response
+                .pointer("/result/shown")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            if !shown {
+                let reason = response
+                    .pointer("/result/reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown");
+                log(&format!("terminal notification was not shown: {reason}"));
+            }
+        }
+        Err(error) => log(&format!("failed to request terminal notification: {error}")),
+    }
+}
+
 pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
-    let activation = Command::new("open")
-        .args(["-a", ACTIVATE_APP])
-        .status()
-        .map_err(|error| format!("failed to activate {ACTIVATE_APP}: {error}"))?;
-    if !activation.success() {
-        return Err(format!("failed to activate {ACTIVATE_APP}: {activation}"));
+    #[cfg(target_os = "macos")]
+    {
+        let activation = Command::new("open")
+            .args(["-a", ACTIVATE_APP])
+            .status()
+            .map_err(|error| format!("failed to activate {ACTIVATE_APP}: {error}"))?;
+        if !activation.success() {
+            return Err(format!("failed to activate {ACTIVATE_APP}: {activation}"));
+        }
     }
 
     SocketClient::new(socket_path).send(
@@ -467,6 +539,26 @@ mod tests {
                 "w1:p1;echo bad"
             ),
             "'/tmp/cast app' 'focus' '/tmp/a'\\''b.sock' 'w1:p1;echo bad'"
+        );
+    }
+
+    #[test]
+    fn terminal_notification_request_disables_sound() {
+        let params = NotificationShowParams {
+            title: "✅ Pi done".into(),
+            body: Some("cast · herdr-cast".into()),
+            position: None,
+            sound: "none",
+        };
+
+        assert_eq!(
+            serde_json::to_value(params).unwrap(),
+            serde_json::json!({
+                "title": "✅ Pi done",
+                "body": "cast · herdr-cast",
+                "position": null,
+                "sound": "none"
+            })
         );
     }
 }

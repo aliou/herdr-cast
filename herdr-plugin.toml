@@ -1,14 +1,14 @@
 id = "ad.cast"
 name = "Cast"
 version = "0.1.0"
-min_herdr_version = "0.7.0"
-description = "Personal Herdr customizations with native agent notifications and workspace tools."
-platforms = ["macos"]
+min_herdr_version = "0.8.0"
+description = "Personal Herdr customizations with agent notifications and workspace tools."
+platforms = ["macos", "linux"]
 
 # Build the single Rust binary used by every plugin entrypoint.
 [[build]]
 command = ["cargo", "build", "--release"]
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 
 # Rebuild every Space's sidebar metadata. Herdr drops metadata tokens when a
 # new server restores a session, so without this the second Space row stays
@@ -16,8 +16,8 @@ platforms = ["macos"]
 [[startup]]
 command = ["herdr-cast", "sync-spaces"]
 
-# Fire a native notification whenever a pane's agent status changes. The
-# handler filters to the hard-coded blocked and done statuses.
+# Fire a notification whenever a pane's agent status changes. The handler
+# filters to the hard-coded blocked and done statuses.
 [[events]]
 on = "pane.agent_status_changed"
 command = ["herdr-cast", "notify"]
@@ -49,7 +49,7 @@ command = ["herdr-cast", "sync-title"]
 [[panes]]
 id = "layout-palette"
 title = "Layout palette"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 placement = "popup"
 width = 44
 height = 10
@@ -64,7 +64,7 @@ command = ["herdr-cast", "palette"]
 [[panes]]
 id = "directory-workspace"
 title = "New workspace"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 placement = "popup"
 width = "37%"
 height = "33%"
@@ -75,7 +75,7 @@ command = ["herdr-cast", "directory-workspace"]
 [[panes]]
 id = "workspace-picker"
 title = "Switch workspace"
-platforms = ["macos"]
+platforms = ["macos", "linux"]
 placement = "popup"
 width = "37%"
 height = "33%"
