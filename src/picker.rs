@@ -400,6 +400,12 @@ impl PickerState {
         }
     }
 
+    fn cycle_view_back<T>(&mut self, view_count: usize, choices: &[Choice<T>]) {
+        if view_count > 0 {
+            self.set_view((self.view + view_count - 1) % view_count, choices);
+        }
+    }
+
     /// Backward-compatible shim for the ordering tests: view 0 = primary,
     /// view 1 = the first alternate. Equivalent to [`Self::set_view`].
     #[cfg(test)]
@@ -680,6 +686,17 @@ fn handle_event<T>(
             ..
         } if order_view_count > 1 => {
             state.cycle_view(order_view_count, choices);
+            InputOutcome::Continue
+        }
+        KeyEvent {
+            code: KeyCode::BackTab, ..
+        }
+        | KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::SHIFT,
+            ..
+        } if order_view_count > 1 => {
+            state.cycle_view_back(order_view_count, choices);
             InputOutcome::Continue
         }
         KeyEvent {
