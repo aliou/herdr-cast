@@ -60,8 +60,10 @@ pub struct Choice<T> {
     status: Option<ChoiceStatus>,
     current: bool,
     alternate_order: usize,
-    primary_only: bool,
-    alternate_only: bool,
+    /// Bitmask of view indices this choice appears in. `u32::MAX` means every
+    /// view; builders narrow it with [`Choice::only_in_view`]. View 0 is the
+    /// primary (tree/zoxide) view; higher indices are flat views.
+    views: u32,
     context: Option<String>,
     inline_detail: bool,
     detail_primary_only: bool,
@@ -90,8 +92,7 @@ impl<T> Choice<T> {
             status: None,
             current: false,
             alternate_order: usize::MAX,
-            primary_only: false,
-            alternate_only: false,
+            views: u32::MAX,
             context: None,
             inline_detail: false,
             detail_primary_only: false,
@@ -127,13 +128,24 @@ impl<T> Choice<T> {
         self
     }
 
-    pub fn primary_only(mut self) -> Self {
-        self.primary_only = true;
+    /// Restrict this choice to a single view index. View 0 is the primary
+    /// (tree/zoxide) view.
+    pub fn only_in_view(mut self, view: usize) -> Self {
+        self.views = 1 << view;
         self
     }
 
+    /// Visible only in view 0 (the primary/tree view). Equivalent to
+    /// [`Choice::only_in_view`] with 0.
+    pub fn primary_only(mut self) -> Self {
+        self.views = 1 << 0;
+        self
+    }
+
+    /// Visible only in view 1 (the first alternate view). Equivalent to
+    /// [`Choice::only_in_view`] with 1.
     pub fn alternate_only(mut self) -> Self {
-        self.alternate_only = true;
+        self.views = 1 << 1;
         self
     }
 
@@ -177,6 +189,19 @@ impl<T> Choice<T> {
         self.match_text = Some(text.into());
         self
     }
+
+    /// Test/inspection accessor for the numeric sort key used by alternate
+    /// views (agent status rank or recency rank).
+    #[cfg(test)]
+    pub(crate) fn sort_key(&self) -> usize {
+        self.alternate_order
+    }
+
+    /// Whether this choice appears in the given view index.
+    #[cfg(test)]
+    pub(crate) fn visible_in(&self, view: usize) -> bool {
+        self.views & (1 << view) != 0
+    }
 }
 
 pub struct Picker<'a> {
@@ -187,9 +212,12 @@ pub struct Picker<'a> {
 
 #[derive(Clone, Copy)]
 pub struct OrderToggle<'a> {
-    pub primary: &'a str,
-    pub alternate: &'a str,
-    pub initial_alternate: bool,
+    /// View or sort labels, left to right. The first label is the primary
+    /// view/sort; each subsequent label is an alternate. Tab cycles through
+    /// them in order.
+    pub labels: &'a [&'a str],
+    /// Index into [`OrderToggle::labels`] to start on.
+    pub initial: usize,
     pub kind: ToggleKind,
 }
 
@@ -207,17 +235,18 @@ struct PickerState {
     matches: Vec<usize>,
     selected: usize,
     tick: usize,
-    alternate_order: bool,
+    /// Active view index. 0 is the primary view; higher indices are alternates.
+    view: usize,
     priority_sort: bool,
 }
 
 impl PickerState {
     #[cfg(test)]
     fn new<T>(choices: &[Choice<T>]) -> Self {
-        Self::new_with_order(choices, false)
+        Self::new_with_view(choices, 0)
     }
 
-    fn new_with_order<T>(choices: &[Choice<T>], alternate_order: bool) -> Self {
+    fn new_with_view<T>(choices: &[Choice<T>], view: usize) -> Self {
         let selected = choices
             .iter()
             .rposition(|choice| choice.current)
@@ -228,16 +257,25 @@ impl PickerState {
             matches: (0..choices.len()).collect(),
             selected,
             tick: 0,
-            alternate_order,
+            view,
             priority_sort: true,
         }
     }
 
+    /// Whether the active view ranks rows by [`Choice::alternate_order`] and
+    /// uses the flat (non-tree) match path. View 0 keeps the primary/tree order;
+    /// every alternate view (1, 2, ...) ranks by the numeric key. This is the
+    /// single per-view ordering assumption.
+    fn ranks_by_alternate_order(&self) -> bool {
+        self.view != 0
+    }
+
     fn update_matches<T>(&mut self, choices: &[Choice<T>]) {
+        let ranks_by_alternate_order = self.ranks_by_alternate_order();
         let active = choices
             .iter()
             .enumerate()
-            .filter(|(_, choice)| choice_visible(choice, self.alternate_order))
+            .filter(|(_, choice)| choice_visible(choice, self.view))
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         if active
@@ -245,10 +283,10 @@ impl PickerState {
             .any(|index| choices[*index].tree_root || choices[*index].parent.is_some())
         {
             self.matches =
-                hierarchical_matches(choices, &active, &self.query, self.alternate_order);
+                hierarchical_matches(choices, &active, &self.query, ranks_by_alternate_order);
         } else if self.query.is_empty() {
             self.matches = active;
-            if self.alternate_order {
+            if ranks_by_alternate_order {
                 self.matches
                     .sort_by_key(|index| choices[*index].alternate_order);
             }
@@ -257,7 +295,7 @@ impl PickerState {
                 .into_iter()
                 .filter_map(|index| {
                     let choice = &choices[index];
-                    if !self.alternate_order && choice.match_kind == MatchKind::Zoxide {
+                    if !ranks_by_alternate_order && choice.match_kind == MatchKind::Zoxide {
                         let text = choice.match_text.as_deref().unwrap_or(&choice.search_text);
                         crate::zoxide::keywords_match(text, &self.query).then_some((index, 0))
                     } else {
@@ -265,11 +303,11 @@ impl PickerState {
                     }
                 })
                 .collect::<Vec<_>>();
-            let prioritize_alternate = self.alternate_order
+            let prioritize_alternate = ranks_by_alternate_order
                 && matches
                     .iter()
                     .any(|(index, _)| choices[*index].prioritize_alternate_order);
-            let preserve_primary = !self.alternate_order
+            let preserve_primary = !ranks_by_alternate_order
                 && matches
                     .iter()
                     .any(|(index, _)| choices[*index].preserve_primary_order_in_search);
@@ -350,26 +388,41 @@ impl PickerState {
         self.cursor = 0;
     }
 
-    fn set_alternate_order<T>(&mut self, alternate: bool, choices: &[Choice<T>]) {
-        self.alternate_order = alternate;
+    fn set_view<T>(&mut self, view: usize, choices: &[Choice<T>]) {
+        self.view = view;
         self.update_matches(choices);
-        if alternate {
-            self.selected = 0;
-        } else {
-            self.select_current(choices);
+        self.select_previous(choices);
+    }
+
+    fn cycle_view<T>(&mut self, view_count: usize, choices: &[Choice<T>]) {
+        if view_count > 0 {
+            self.set_view((self.view + 1) % view_count, choices);
         }
     }
 
-    fn toggle_order<T>(&mut self, choices: &[Choice<T>]) {
-        self.set_alternate_order(!self.alternate_order, choices);
+    /// Backward-compatible shim for the ordering tests: view 0 = primary,
+    /// view 1 = the first alternate. Equivalent to [`Self::set_view`].
+    #[cfg(test)]
+    fn set_alternate_order<T>(&mut self, alternate: bool, choices: &[Choice<T>]) {
+        self.set_view(if alternate { 1 } else { 0 }, choices);
     }
 
-    fn select_current<T>(&mut self, choices: &[Choice<T>]) {
+    /// Backward-compatible shim for the ordering tests.
+    #[cfg(test)]
+    fn new_with_order<T>(choices: &[Choice<T>], alternate: bool) -> Self {
+        Self::new_with_view(choices, if alternate { 1 } else { 0 })
+    }
+
+    fn select_previous<T>(&mut self, choices: &[Choice<T>]) {
         if self.query.is_empty() {
+            // The currently focused pane is left out of the initial selection so
+            // that confirming the picker jumps somewhere else. Pick the first
+            // visible row that is not the current pane; to stay in the current
+            // pane, press Escape.
             if let Some(position) = self
                 .matches
                 .iter()
-                .rposition(|index| choices[*index].current)
+                .position(|index| !choices[*index].current)
             {
                 self.selected = position;
             }
@@ -406,7 +459,7 @@ pub fn pick_with_detail<T, F>(
     picker: Picker<'_>,
     choices: Vec<Choice<T>>,
     detail_loader: F,
-) -> Result<(Option<T>, bool), String>
+) -> Result<(Option<T>, usize), String>
 where
     F: FnMut(&T) -> Option<String>,
 {
@@ -417,19 +470,18 @@ fn pick_inner<T, F>(
     picker: Picker<'_>,
     mut choices: Vec<Choice<T>>,
     mut detail_loader: F,
-) -> Result<(Option<T>, bool), String>
+) -> Result<(Option<T>, usize), String>
 where
     F: FnMut(&T) -> Option<String>,
 {
     let mut session = TerminalSession::start()?;
-    let mut state = PickerState::new_with_order(
+    let order_view_count = picker.order.map(|order| order.labels.len()).unwrap_or(0);
+    let mut state = PickerState::new_with_view(
         &choices,
-        picker.order.is_some_and(|order| order.initial_alternate),
+        picker.order.map(|order| order.initial).unwrap_or(0),
     );
     state.update_matches(&choices);
-    if !state.alternate_order {
-        state.select_current(&choices);
-    }
+    state.select_previous(&choices);
     let mut details_loaded = HashSet::new();
 
     let outcome = loop {
@@ -462,7 +514,7 @@ where
         }
         let event =
             event::read().map_err(|error| format!("failed to read picker input: {error}"))?;
-        match handle_event(event, &mut state, &choices, picker.order.is_some()) {
+        match handle_event(event, &mut state, &choices, order_view_count) {
             InputOutcome::Continue => {}
             InputOutcome::Select(index) => break Some(index),
             InputOutcome::Cancel => break None,
@@ -470,7 +522,7 @@ where
     };
 
     session.restore()?;
-    let alternate_order = state.alternate_order;
+    let view = state.view;
     let selection = outcome.map(|index| {
         choices
             .into_iter()
@@ -478,14 +530,14 @@ where
             .expect("selected index is valid")
             .value
     });
-    Ok((selection, alternate_order))
+    Ok((selection, view))
 }
 
 fn handle_event<T>(
     event: Event,
     state: &mut PickerState,
     choices: &[Choice<T>],
-    has_order_toggle: bool,
+    order_view_count: usize,
 ) -> InputOutcome {
     let Event::Key(key) = event else {
         return InputOutcome::Continue;
@@ -626,15 +678,15 @@ fn handle_event<T>(
             code: KeyCode::Tab,
             modifiers: KeyModifiers::NONE,
             ..
-        } if has_order_toggle => {
-            state.toggle_order(choices);
+        } if order_view_count > 1 => {
+            state.cycle_view(order_view_count, choices);
             InputOutcome::Continue
         }
         KeyEvent {
             code: KeyCode::Char('s'),
             modifiers: KeyModifiers::CONTROL,
             ..
-        } if priority_sort_applies(choices, state.alternate_order) => {
+        } if priority_sort_applies(choices, state.view) => {
             state.priority_sort = !state.priority_sort;
             state.update_matches(choices);
             InputOutcome::Continue
@@ -677,7 +729,7 @@ fn render<T>(
 
     // Reserve the tab row for every view of a picker that has tabs, so
     // toggling views never shifts the input or the results.
-    let tab_row = order.is_some() || has_priority_sort(choices);
+    let tab_row = order.is_some() || priority_sort_applies(choices, state.view);
     let mut constraints = Vec::with_capacity(4);
     if tab_row {
         constraints.push(Constraint::Length(1));
@@ -705,7 +757,7 @@ fn render_tabs<T>(
     choices: &[Choice<T>],
     state: &PickerState,
 ) {
-    let order_tabs = order.map(|order| (order.kind, order_tabs(order, state.alternate_order)));
+    let order_tabs = order.map(|order| (order.kind, order_tabs(order, state.view)));
     let left = order_tabs
         .as_ref()
         .filter(|(kind, _)| *kind == ToggleKind::View)
@@ -717,13 +769,23 @@ fn render_tabs<T>(
         .filter(|(kind, _)| *kind == ToggleKind::Sort)
         .map(|(_, tabs)| tabs.clone())
         .or_else(|| {
-            priority_sort_applies(choices, state.alternate_order)
-                .then(|| mode_tabs(state.priority_sort))
+            priority_sort_applies(choices, state.view).then(|| mode_tabs(state.priority_sort))
         });
 
     let left_width = left.as_deref().map(span_width).unwrap_or(0);
-    if let Some(tabs) = left.filter(|_| area.width >= left_width) {
-        render_tab_group(frame, Rect::new(area.x, area.y, left_width, 1), tabs);
+    if let Some(tabs) = left.clone() {
+        if area.width >= left_width {
+            render_tab_group(frame, Rect::new(area.x, area.y, left_width, 1), tabs);
+        } else if let Some(order) = order {
+            // The full tab group does not fit (common for the 3-label workspace
+            // toggle in a narrow popup). Fall back to the active label alone so
+            // the user always sees which view is selected while Tab cycles.
+            let compact = active_label_tabs(order, state.view);
+            let compact_width = span_width(&compact);
+            if area.width >= compact_width {
+                render_tab_group(frame, Rect::new(area.x, area.y, compact_width, 1), compact);
+            }
+        }
     }
     let Some(tabs) = right else {
         return;
@@ -790,31 +852,45 @@ fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &Picker
     }
 }
 
-fn order_tabs<'a>(order: OrderToggle<'a>, alternate: bool) -> Vec<Span<'a>> {
+fn order_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
     let active_style = Style::default()
         .fg(BACKGROUND)
         .bg(ACCENT)
         .add_modifier(Modifier::BOLD);
     let inactive_style = Style::default().fg(MUTED).bg(BACKGROUND);
-    vec![
-        Span::styled(
-            format!(" {} ", order.primary),
-            if alternate {
-                inactive_style
-            } else {
-                active_style
-            },
-        ),
-        Span::styled(" ", Style::default().bg(BACKGROUND)),
-        Span::styled(
-            format!(" {} ", order.alternate),
-            if alternate {
+    let separator = Style::default().bg(BACKGROUND);
+    let mut spans = Vec::with_capacity(order.labels.len() * 2);
+    for (index, label) in order.labels.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(" ", separator));
+        }
+        spans.push(Span::styled(
+            format!(" {label} "),
+            if index == active {
                 active_style
             } else {
                 inactive_style
             },
-        ),
-    ]
+        ));
+    }
+    spans
+}
+
+/// Compact fallback for [`order_tabs`] when the full tab group does not fit:
+/// render only the active label, styled as active, so the user can still see
+/// which view is selected in a narrow popup.
+fn active_label_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
+    let active_style = Style::default()
+        .fg(BACKGROUND)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let label = order
+        .labels
+        .get(active)
+        .or_else(|| order.labels.first())
+        .copied()
+        .unwrap_or("");
+    vec![Span::styled(format!(" {label} "), active_style)]
 }
 
 fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
@@ -1013,7 +1089,8 @@ fn render_results<T>(
             ));
         }
         let show_inline_detail = hierarchical
-            || (choice.inline_detail && (!choice.detail_primary_only || !state.alternate_order));
+            || (choice.inline_detail
+                && (!choice.detail_primary_only || state.ranks_by_alternate_order()));
         if show_inline_detail {
             if let Some(detail) = &choice.detail {
                 spans.push(Span::styled(
@@ -1022,7 +1099,7 @@ fn render_results<T>(
                 ));
             }
         }
-        if !state.alternate_order {
+        if !state.ranks_by_alternate_order() {
             if let Some(suffix) = &choice.primary_suffix {
                 spans.push(Span::styled(
                     format!("  {suffix}"),
@@ -1133,22 +1210,20 @@ fn hierarchical_matches<T>(
     groups.into_iter().flat_map(|(_, _, group)| group).collect()
 }
 
-fn choice_visible<T>(choice: &Choice<T>, alternate: bool) -> bool {
-    if alternate {
-        !choice.primary_only
-    } else {
-        !choice.alternate_only
-    }
+fn choice_visible<T>(choice: &Choice<T>, view: usize) -> bool {
+    // The views bitmask selects which view indices a choice appears in.
+    // `u32::MAX` (the default) means every view.
+    choice.views & (1 << view) != 0
 }
 
-fn priority_sort_applies<T>(choices: &[Choice<T>], alternate: bool) -> bool {
-    alternate && has_priority_sort(choices)
-}
-
-fn has_priority_sort<T>(choices: &[Choice<T>]) -> bool {
-    choices
-        .iter()
-        .any(|choice| choice.prioritize_alternate_order)
+/// Whether the priority-sort (prio/fuzzy) toggle should appear in `view`.
+/// Scoped to choices actually visible in that view so agent-only choices in
+/// the underlying vec do not leak the toggle into the panes view.
+fn priority_sort_applies<T>(choices: &[Choice<T>], view: usize) -> bool {
+    view != 0
+        && choices
+            .iter()
+            .any(|choice| choice_visible(choice, view) && choice.prioritize_alternate_order)
 }
 
 fn tree_prefix<T>(index: usize, choices: &[Choice<T>], visible: &[usize]) -> &'static str {
@@ -1406,21 +1481,76 @@ mod tests {
     }
 
     #[test]
-    fn alternate_view_selects_first_match_and_primary_view_selects_current() {
+    fn empty_query_selects_the_first_non_current_row_in_every_view() {
+        // The currently focused pane is never the initial selection. On an empty
+        // query the picker lands on the first visible row that is not current,
+        // so confirming jumps elsewhere and Escape stays put.
         let choices = vec![
             Choice::new("first", "first", None::<String>, "first"),
             Choice::new("current", "current", None::<String>, "current").current(true),
         ];
         let mut state = PickerState::new(&choices);
         state.update_matches(&choices);
-        state.select_current(&choices);
-        assert_eq!(state.selected, 1);
-
-        state.set_alternate_order(true, &choices);
+        state.select_previous(&choices);
         assert_eq!(state.selected, 0);
 
-        state.set_alternate_order(false, &choices);
+        // Moving current to the front (as in MRU ordering) still skips it.
+        let choices = vec![
+            Choice::new("current", "current", None::<String>, "current").current(true),
+            Choice::new("previous", "previous", None::<String>, "previous"),
+        ];
+        let mut state = PickerState::new(&choices);
+        state.update_matches(&choices);
+        state.select_previous(&choices);
         assert_eq!(state.selected, 1);
+
+        // All-current rows leave the default (0) in place rather than panicking.
+        let choices =
+            vec![Choice::new("current", "current", None::<String>, "current").current(true)];
+        let mut state = PickerState::new(&choices);
+        state.update_matches(&choices);
+        state.select_previous(&choices);
+        assert_eq!(state.selected, 0);
+    }
+
+    #[test]
+    fn three_way_view_cycles_and_filters_visibility() {
+        // View 0: primary only; view 1: first alternate only; view 2: second
+        // alternate only. Tab cycles 0 -> 1 -> 2 -> 0.
+        let choices = vec![
+            Choice::new("primary", "primary", None::<String>, "primary").primary_only(),
+            Choice::new("agents", "agents", None::<String>, "agents").alternate_only(),
+            Choice::new("panes", "panes", None::<String>, "panes").only_in_view(2),
+        ];
+        let mut state = PickerState::new_with_view(&choices, 0);
+        state.update_matches(&choices);
+        assert_eq!(state.view, 0);
+        assert_eq!(state.matches, vec![0]);
+        state.cycle_view(3, &choices);
+        assert_eq!(state.view, 1);
+        assert_eq!(state.matches, vec![1]);
+        state.cycle_view(3, &choices);
+        assert_eq!(state.view, 2);
+        assert_eq!(state.matches, vec![2]);
+        state.cycle_view(3, &choices);
+        assert_eq!(state.view, 0);
+        assert_eq!(state.matches, vec![0]);
+    }
+
+    #[test]
+    fn priority_sort_does_not_apply_in_the_panes_view() {
+        // The real shape: agent choices (view 1) carry prioritize_alternate_order
+        // for the prio/fuzzy toggle; flat pane choices (view 2) never do, because
+        // MRU is the default empty-query order there. A view-2 choice without the
+        // flag must not pick up the toggle from the agent choice sharing the vec.
+        let choices = vec![
+            Choice::new("agent", "agent", None::<String>, "agent")
+                .alternate_only()
+                .prioritize_alternate_order(),
+            Choice::new("pane", "pane", None::<String>, "pane").only_in_view(2),
+        ];
+        assert!(priority_sort_applies(&choices, 1));
+        assert!(!priority_sort_applies(&choices, 2));
     }
 
     #[test]
@@ -1611,9 +1741,8 @@ mod layout {
 
     fn view_toggle() -> Option<OrderToggle<'static>> {
         Some(OrderToggle {
-            primary: "spaces",
-            alternate: "agents",
-            initial_alternate: false,
+            labels: &["spaces", "agents"],
+            initial: 0,
             kind: ToggleKind::View,
         })
     }
@@ -1656,9 +1785,8 @@ mod layout {
         let rendered = rows(
             &choices,
             Some(OrderToggle {
-                primary: "zoxide",
-                alternate: "alpha",
-                initial_alternate: false,
+                labels: &["zoxide", "alpha"],
+                initial: 0,
                 kind: ToggleKind::Sort,
             }),
             false,
@@ -1693,6 +1821,30 @@ mod layout {
         assert!(
             rendered[0].contains("agents"),
             "missing view tabs: {:?}",
+            rendered[0]
+        );
+    }
+
+    #[test]
+    fn narrow_popups_show_the_active_view_label_when_the_full_group_does_not_fit() {
+        // Three-label toggle ("spaces", "agents", "panes") does not fit at
+        // width 16, but the active label must still show so the user knows
+        // which view Tab selected.
+        let choices = vec![Choice::new("only", "only", None::<String>, "only")];
+        let order = Some(OrderToggle {
+            labels: &["spaces", "agents", "panes"],
+            initial: 0,
+            kind: ToggleKind::View,
+        });
+        let rendered = rows_sized(&choices, order, false, 16, 8);
+        assert!(
+            rendered[0].contains("spaces"),
+            "active label missing in narrow popup: {:?}",
+            rendered[0]
+        );
+        assert!(
+            !rendered[0].contains("panes"),
+            "inactive labels should be hidden when narrow: {:?}",
             rendered[0]
         );
     }

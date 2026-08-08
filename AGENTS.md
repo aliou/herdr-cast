@@ -86,7 +86,13 @@ request/response contract.
   editing, tree rows, and animated agent-status icons.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
   pane focus through `workspace.create`, `workspace.list`, `pane.list`,
-  `workspace.focus`, and `pane.focus`.
+  `workspace.focus`, and `pane.focus`. The workspace picker has three views:
+  `spaces` (workspace -> pane tree), `agents` (flat agent panes by status),
+  and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
+- `src/recency.rs`: bounded move-to-front log of focused pane ids, recorded by
+  the `record-focus` command on `pane.focused` events into the injected state
+  directory. Read at picker open; stale ids for closed panes are filtered
+  against `pane.list` and never name a pane.
 - `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
   `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
   `pane.process_info`, and prints the zsh integration that triggers a sync.

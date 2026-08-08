@@ -3,13 +3,25 @@ mod notify;
 mod palette;
 mod picker;
 mod popup;
+mod recency;
 mod space;
 mod workspace;
 mod zoxide;
 
+#[cfg(test)]
+mod test_support {
+    use std::sync::Mutex;
+
+    /// Serializes tests that mutate process-global environment variables
+    /// (`HERDR_PLUGIN_STATE_DIR`, `HERDR_PLUGIN_EVENT_JSON`). Without this,
+    /// parallel cargo tests race on the shared env and intermittently fail.
+    pub static ENV_MUTEX: Mutex<()> = Mutex::new(());
+}
+
 fn main() {
     let mut arguments = std::env::args().skip(1);
     let result = match arguments.next().as_deref() {
+        Some("record-focus") if arguments.next().is_none() => recency::record_focus(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("palette") if arguments.next().is_none() => palette::run(),
         Some("directory-workspace") if arguments.next().is_none() => {
@@ -41,7 +53,7 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <notify|palette|directory-workspace|workspace-picker",
+            "usage: herdr-cast <record-focus|notify|palette|directory-workspace|workspace-picker",
             "|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),

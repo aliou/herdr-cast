@@ -34,6 +34,12 @@ command = ["herdr-cast", "sync-space"]
 on = "workspace.focused"
 command = ["herdr-cast", "sync-space"]
 
+# Record the focused pane so the workspace picker's "panes" view can order by
+# most-recent-first. High-volume but cheap: one small bounded state rewrite.
+[[events]]
+on = "pane.focused"
+command = ["herdr-cast", "record-focus"]
+
 # Keep the foreground terminal window title aligned with the current Space.
 # Herdr owns only the foreground client title, not per-workspace title state,
 # so refresh it on focus and when a focused Space is renamed.

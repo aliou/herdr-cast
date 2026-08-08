@@ -12,6 +12,10 @@ use crate::zoxide::{self, RankedDirectory};
 
 const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
 const WORKSPACE_PICKER_VIEW_FILE: &str = "workspace-picker-view";
+/// View labels in display order. The persisted view file stores one of these
+/// labels; the index here matches the view bitmask indices used by
+/// [`picker_choices`].
+const WORKSPACE_PICKER_VIEWS: &[&str] = &["spaces", "agents", "panes"];
 
 #[derive(Serialize)]
 struct EmptyParams {}
@@ -43,6 +47,13 @@ struct PaneTarget {
 enum FocusTarget {
     Workspace(String),
     Pane(String),
+}
+
+impl FocusTarget {
+    #[cfg(test)]
+    fn is_pane(&self) -> bool {
+        matches!(self, FocusTarget::Pane(_))
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -113,9 +124,8 @@ pub fn create_from_directory() -> Result<(), String> {
             placeholder: "Search ranked directories",
             empty_message: "No matching directories",
             order: Some(OrderToggle {
-                primary: "zoxide",
-                alternate: "alpha",
-                initial_alternate: false,
+                labels: &["zoxide", "alpha"],
+                initial: 0,
                 kind: ToggleKind::Sort,
             }),
         },
@@ -157,22 +167,22 @@ pub fn focus_existing() -> Result<(), String> {
         return Err("Herdr has no workspaces".to_string());
     }
     let panes = list_panes(&client)?;
-    let choices = workspace_tree_choices(workspaces, panes);
-    let (target, agents_view) = pick_with_detail(
+    let recency = crate::recency::load();
+    let choices = picker_choices(workspaces, panes, &recency);
+    let (target, view) = pick_with_detail(
         Picker {
             placeholder: "Search workspaces and panes",
             empty_message: "No matching workspaces or panes",
             order: Some(OrderToggle {
-                primary: "spaces",
-                alternate: "agents",
-                initial_alternate: load_workspace_picker_agents_view(),
+                labels: &["spaces", "agents", "panes"],
+                initial: load_workspace_picker_view(),
                 kind: ToggleKind::View,
             }),
         },
         choices,
         |_| None,
     )?;
-    save_workspace_picker_agents_view(agents_view)?;
+    save_workspace_picker_view(view)?;
     let Some(target) = target else {
         return Ok(());
     };
@@ -198,13 +208,18 @@ fn socket_client() -> Result<SocketClient, String> {
     Ok(SocketClient::with_timeout(socket, SOCKET_TIMEOUT))
 }
 
-fn load_workspace_picker_agents_view() -> bool {
-    workspace_picker_view_file()
+fn load_workspace_picker_view() -> usize {
+    let raw = workspace_picker_view_file()
         .and_then(|path| fs::read_to_string(path).ok())
-        .is_some_and(|value| value.trim() == "agents")
+        .unwrap_or_default();
+    let label = raw.trim();
+    WORKSPACE_PICKER_VIEWS
+        .iter()
+        .position(|view| *view == label)
+        .unwrap_or(0)
 }
 
-fn save_workspace_picker_agents_view(agents: bool) -> Result<(), String> {
+fn save_workspace_picker_view(view: usize) -> Result<(), String> {
     let Some(path) = workspace_picker_view_file() else {
         return Ok(());
     };
@@ -212,8 +227,12 @@ fn save_workspace_picker_agents_view(agents: bool) -> Result<(), String> {
         fs::create_dir_all(parent)
             .map_err(|error| format!("failed to create workspace picker state: {error}"))?;
     }
+    let label = WORKSPACE_PICKER_VIEWS
+        .get(view)
+        .or_else(|| WORKSPACE_PICKER_VIEWS.first())
+        .expect("view labels are non-empty");
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
-    fs::write(&temporary, if agents { "agents\n" } else { "spaces\n" })
+    fs::write(&temporary, format!("{label}\n"))
         .map_err(|error| format!("failed to save workspace picker view: {error}"))?;
     fs::rename(&temporary, &path).map_err(|error| {
         let _ = fs::remove_file(&temporary);
@@ -320,11 +339,34 @@ fn directory_choice(
     .with_match_text(directory.path.to_string_lossy())
 }
 
+#[cfg(test)]
 fn workspace_tree_choices(
     workspaces: Vec<WorkspaceInfo>,
     panes: Vec<PaneInfo>,
 ) -> Vec<Choice<FocusTarget>> {
+    picker_choices(workspaces, panes, &[])
+}
+
+/// Build the choices for every view of the workspace picker.
+///
+/// - View 0 ("spaces"): workspace -> pane tree, plus agent-only rows hidden
+///   from this view.
+/// - View 1 ("agents"): flat list of agent panes, ranked by agent status.
+/// - View 2 ("panes"): flat list of every pane (shells and agents), ranked by
+///   most-recent-focus first via `recency`, falling back to workspace order.
+///
+/// `recency` is most-recent-first; stale ids not in `panes` are ignored.
+fn picker_choices(
+    workspaces: Vec<WorkspaceInfo>,
+    panes: Vec<PaneInfo>,
+    recency: &[String],
+) -> Vec<Choice<FocusTarget>> {
+    let workspace_labels: BTreeMap<String, String> = workspaces
+        .iter()
+        .map(|workspace| (workspace.workspace_id.clone(), workspace.label.clone()))
+        .collect();
     let mut choices = Vec::new();
+    // Build the spaces tree and the agents flat list first, exactly as before.
     for workspace in workspaces {
         let root_index = choices.len();
         let workspace_id = workspace.workspace_id.clone();
@@ -346,7 +388,68 @@ fn workspace_tree_choices(
                 .map(|pane| agent_choice(pane, &workspace_label).alternate_only()),
         );
     }
+    // View 2: every pane flat, most-recent-first.
+    choices.extend(pane_recency_choices(&panes, recency, &workspace_labels));
     choices
+}
+
+/// Flat pane choices for the "panes" view, ordered most-recent-focus first.
+/// `recency` is most-recent-first; panes absent from the log keep their
+/// workspace/pane order and sort after every pane that was ever focused.
+fn pane_recency_choices(
+    panes: &[PaneInfo],
+    recency: &[String],
+    workspace_labels: &BTreeMap<String, String>,
+) -> Vec<Choice<FocusTarget>> {
+    let mut fallback = usize::MAX;
+    panes
+        .iter()
+        .map(|pane| {
+            let workspace_label = workspace_labels
+                .get(&pane.workspace_id)
+                .cloned()
+                .unwrap_or_else(|| pane.workspace_id.clone());
+            let recency_rank = match recency.iter().position(|id| id == &pane.pane_id) {
+                Some(position) => position,
+                None => {
+                    // Preserve stable workspace/pane order among unseen panes
+                    // while keeping them after every focused pane.
+                    fallback = fallback.saturating_add(1);
+                    fallback
+                }
+            };
+            flat_pane_choice(pane, &workspace_label, recency_rank).only_in_view(2)
+        })
+        .collect()
+}
+
+/// A flat pane row shown in the "panes" view. Like [`agent_choice`] but for
+/// every pane (shells included) and ordered by `recency_rank` (ascending), so
+/// the most recently focused pane surfaces first on an empty query.
+fn flat_pane_choice(
+    pane: &PaneInfo,
+    workspace_label: &str,
+    recency_rank: usize,
+) -> Choice<FocusTarget> {
+    let title = pane_title(pane);
+    let agent_name = pane.agent_name();
+    let detail = agent_name.unwrap_or("shell").to_string();
+    let search = format!(
+        "{} {}",
+        workspace_label,
+        pane_search_text(pane, &title, &detail)
+    );
+    Choice::new(
+        FocusTarget::Pane(pane.pane_id.clone()),
+        title,
+        Some(detail),
+        search,
+    )
+    .with_context(workspace_label)
+    .inline_detail(false)
+    .current(pane.focused)
+    .with_optional_status(agent_name.map(|_| parse_status(&pane.agent_status)))
+    .alternate_order(recency_rank)
 }
 
 fn workspace_choice(workspace: WorkspaceInfo) -> Choice<FocusTarget> {
@@ -606,11 +709,14 @@ mod tests {
         let workspaces = vec![workspace("w:one", "one"), workspace("w:two", "two")];
         let panes = vec![pane("p:two", "w:two", "agent two")];
         let choices = workspace_tree_choices(workspaces, panes);
-        assert_eq!(choices.len(), 4);
+        // Spaces tree (view 0): two workspaces, one pane child, one agent row.
+        // Plus one flat pane row for the "panes" view (view 2).
+        assert_eq!(choices.len(), 5);
         assert_eq!(choices[0].value, FocusTarget::Workspace("w:one".into()));
         assert_eq!(choices[1].value, FocusTarget::Workspace("w:two".into()));
         assert_eq!(choices[2].value, FocusTarget::Pane("p:two".into()));
         assert_eq!(choices[3].value, FocusTarget::Pane("p:two".into()));
+        assert_eq!(choices[4].value, FocusTarget::Pane("p:two".into()));
     }
 
     #[test]
@@ -640,6 +746,94 @@ mod tests {
             Some(existing),
         );
         assert_eq!(choice.value, DirectoryTarget::Focus("w:existing".into()));
+    }
+
+    #[test]
+    fn panes_view_orders_panes_most_recent_first() {
+        let workspaces = vec![workspace("w:one", "one")];
+        let panes = vec![
+            pane("p:old", "w:one", "old shell"),
+            pane("p:new", "w:one", "new shell"),
+            pane("p:never", "w:one", "never focused"),
+        ];
+        // Recency log is most-recent-first: p:new was focused last.
+        let recency = vec!["p:new".to_string(), "p:old".to_string()];
+        let choices = picker_choices(workspaces, panes, &recency);
+        // Only the flat panes-view rows carry view-2-only visibility.
+        let panes_view: Vec<_> = choices
+            .iter()
+            .filter(|choice| choice.value.is_pane() && choice.visible_in(2))
+            .collect();
+        let rank = |id: &str| {
+            panes_view
+                .iter()
+                .find(|choice| choice.value == FocusTarget::Pane(id.into()))
+                .map(|choice| choice.sort_key())
+                .unwrap()
+        };
+        // MRU rank: p:new=0, p:old=1, p:never=large fallback.
+        assert_eq!(rank("p:new"), 0);
+        assert_eq!(rank("p:old"), 1);
+        assert!(rank("p:never") > 1);
+        // The picker's empty-query alternate-order sort (covered by picker
+        // tests) surfaces these ranks ascending, so p:new lands first.
+    }
+
+    #[test]
+    fn panes_view_includes_shells_and_ignores_stale_recency_ids() {
+        let workspaces = vec![workspace("w:one", "one")];
+        let panes = vec![
+            pane("p:shell", "w:one", "a shell"),
+            pane("p:agent", "w:one", "an agent"),
+        ];
+        // p:closed no longer exists; it must be ignored, not crash, and not
+        // shift the rank of the panes that do exist.
+        let recency = vec!["p:closed".to_string(), "p:shell".to_string()];
+        let choices = picker_choices(workspaces, panes, &recency);
+        let panes_view: Vec<_> = choices
+            .iter()
+            .filter(|choice| choice.value.is_pane() && choice.visible_in(2))
+            .collect();
+        assert_eq!(panes_view.len(), 2);
+        // p:shell is at recency rank 1 (after the stale p:closed entry); p:agent
+        // is unseen and sorts after it.
+        let shell = panes_view
+            .iter()
+            .find(|choice| choice.value == FocusTarget::Pane("p:shell".into()))
+            .unwrap();
+        assert_eq!(shell.sort_key(), 1);
+    }
+
+    #[test]
+    fn workspace_picker_view_persistence_round_trips_index_and_label() {
+        let _guard = crate::test_support::ENV_MUTEX.lock().unwrap();
+        let dir =
+            std::env::temp_dir().join(format!("cast-picker-view-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let previous = std::env::var_os("HERDR_PLUGIN_STATE_DIR");
+        std::env::set_var("HERDR_PLUGIN_STATE_DIR", &dir);
+
+        // Unknown / missing label defaults to the primary view (0).
+        fs::write(dir.join(WORKSPACE_PICKER_VIEW_FILE), "bogus\n").unwrap();
+        assert_eq!(load_workspace_picker_view(), 0);
+
+        save_workspace_picker_view(2).unwrap();
+        assert_eq!(load_workspace_picker_view(), 2);
+        assert_eq!(
+            fs::read_to_string(dir.join(WORKSPACE_PICKER_VIEW_FILE)).unwrap(),
+            "panes\n"
+        );
+
+        // Backward compatibility: a pre-existing "agents" file loads as view 1.
+        fs::write(dir.join(WORKSPACE_PICKER_VIEW_FILE), "agents\n").unwrap();
+        assert_eq!(load_workspace_picker_view(), 1);
+
+        if let Some(previous) = previous {
+            std::env::set_var("HERDR_PLUGIN_STATE_DIR", previous);
+        } else {
+            std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
+        }
+        let _ = fs::remove_dir_all(&dir);
     }
 
     fn workspace(id: &str, label: &str) -> WorkspaceInfo {

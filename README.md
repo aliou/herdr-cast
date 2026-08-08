@@ -15,8 +15,8 @@ Click a GIF to play the MP4.
 
 ### Workspace picker
 
-Switch between the nested spaces view and the flat agents view, filter, and
-focus a pane.
+Switch between the nested spaces view, the flat agents view, and the
+most-recent panes view, filter, and focus a pane.
 
 [![Workspace picker](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker-v3.gif)](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker.mp4)
 
@@ -65,10 +65,14 @@ The workspace picker opens with `prefix+space` in the local Herdr config.
 - **Spaces view:** shows workspaces with their panes nested below them.
 - **Agents view:** shows only agent panes as flat rows containing the workspace
   name, pane title, status, and agent name.
+- **Panes view:** shows every pane (shells and agents) flat, ordered by the
+  most recently focused pane first. Cast records each focused pane from the
+  `pane.focused` event into a bounded recency log in its plugin state
+  directory; stale ids for closed panes are ignored at read time.
 - Press `Tab` to switch views.
-- The picker reopens on the last-used spaces or agents view.
-- Agents view starts at the first row; spaces view selects the current pane when
-  there is no query.
+- The picker reopens on the last-used spaces, agents, or panes view.
+- On an empty query the picker lands on the first visible row that is not the
+  current pane, so confirming jumps elsewhere; press `Escape` to stay put.
 - Workspace matches retain their panes; pane matches retain their workspace as
   context.
 - Agent mode uses Herdr's status priority: blocked, done, working, idle, then
