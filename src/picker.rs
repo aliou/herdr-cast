@@ -689,7 +689,8 @@ fn handle_event<T>(
             InputOutcome::Continue
         }
         KeyEvent {
-            code: KeyCode::BackTab, ..
+            code: KeyCode::BackTab,
+            ..
         }
         | KeyEvent {
             code: KeyCode::Tab,
