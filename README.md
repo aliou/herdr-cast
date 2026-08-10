@@ -236,7 +236,7 @@ herdr plugin link "$PWD"
 
 On macOS, after the first notification event, grant notification access under
 **System Settings → Notifications → herdr → Allow**. The grant is tied to the
-bundled app's `codes.dot.herdr-notify` bundle id.
+bundled app's `me.aliou.herdr-cast.notify` bundle id.
 
 Clicking a notification also asks macOS to let the bundled app control
 Ghostty (Automation access), so it can raise the exact window/tab a
@@ -246,7 +246,7 @@ denial and clicking silently falls back to activating Ghostty without
 switching tabs. Reset a stuck denial with:
 
 ```sh
-tccutil reset AppleEvents codes.dot.herdr-notify
+tccutil reset AppleEvents me.aliou.herdr-cast.notify
 ```
 
 This repository's local development checkout may already be linked. Do not
