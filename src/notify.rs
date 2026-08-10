@@ -103,13 +103,17 @@ pub fn run() -> Result<(), String> {
         .and_then(|name| name.to_str())
         .unwrap_or(&workspace);
 
+    // Suppress only when this exact pane is the one on screen: its
+    // workspace is focused, its tab is the workspace's active tab, and it is
+    // the focused pane within that tab (Herdr's `pane.focused`). Comparing
+    // workspace focus alone would suppress every pane in a multi-tab
+    // workspace, including background tabs the user cannot see.
     if cfg!(target_os = "macos") {
-        if let (Some(client), Some(workspace_id)) = (client.as_ref(), workspace_id.as_deref()) {
-            if focused_workspace_id(client).as_deref() == Some(workspace_id) {
-                if let Some(frontmost) = frontmost_bundle_id() {
-                    if TERMINAL_APP_IDS.contains(&frontmost.as_str()) {
-                        return Ok(());
-                    }
+        let pane_focused = bool_at(&pane, "/result/pane/focused").unwrap_or(false);
+        if pane_focused {
+            if let Some(frontmost) = frontmost_bundle_id() {
+                if TERMINAL_APP_IDS.contains(&frontmost.as_str()) {
+                    return Ok(());
                 }
             }
         }
@@ -296,22 +300,12 @@ fn workspace_label(client: Option<&SocketClient>, workspace_id: &str) -> Option<
     string_at(&response, "/result/workspace/label")
 }
 
-fn focused_workspace_id(client: &SocketClient) -> Option<String> {
-    let response = client
-        .send("cast:workspace-list", "workspace.list", json!({}))
-        .ok()?;
-    response
-        .pointer("/result/workspaces")?
-        .as_array()?
-        .iter()
-        .find(|workspace| workspace.get("focused").and_then(Value::as_bool) == Some(true))
-        .and_then(|workspace| workspace.get("workspace_id"))
-        .and_then(Value::as_str)
-        .map(str::to_owned)
-}
-
 fn string_at(value: &Value, pointer: &str) -> Option<String> {
     value.pointer(pointer)?.as_str().map(str::to_owned)
+}
+
+fn bool_at(value: &Value, pointer: &str) -> Option<bool> {
+    value.pointer(pointer)?.as_bool()
 }
 
 fn frontmost_bundle_id() -> Option<String> {
@@ -522,6 +516,20 @@ mod tests {
             Some("com.mitchellh.ghostty".into())
         );
         assert_eq!(parse_bundle_id("unexpected"), None);
+    }
+
+    #[test]
+    fn reads_the_pane_focused_flag_from_a_pane_get_response() {
+        let response = json!({
+            "result": {
+                "pane": {
+                    "pane_id": "w1:p1",
+                    "focused": true
+                }
+            }
+        });
+        assert_eq!(bool_at(&response, "/result/pane/focused"), Some(true));
+        assert_eq!(bool_at(&Value::Null, "/result/pane/focused"), None);
     }
 
     #[test]
