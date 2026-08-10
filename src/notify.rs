@@ -248,12 +248,14 @@ pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
     {
         // `open -a Ghostty` only activates the app, i.e. whatever Ghostty
         // window macOS last treated as key. With more than one Ghostty
-        // window open (one per Herdr session, say), that can raise the
-        // wrong window entirely. Prefer raising the exact terminal surface
-        // this pane runs in, matched by tty through Ghostty's own
-        // AppleScript `focus` command, which brings its window and tab
-        // forward directly.
-        if !focus_ghostty_terminal_for_pane(&client, pane_id) {
+        // window/tab open (one per Herdr session), that can raise the wrong
+        // one entirely. Prefer raising the exact terminal surface hosting
+        // this session, matched by pid through Ghostty's own AppleScript
+        // `focus` command, which brings its window and tab forward
+        // directly. `agent.focus` above already picked the right pane
+        // inside Herdr; this only has to reveal the OS window/tab Herdr is
+        // rendering into.
+        if !focus_ghostty_terminal_for_session(socket_path) {
             activate_ghostty_app();
         }
     }
@@ -262,9 +264,9 @@ pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
 }
 
 /// Best-effort fallback when no matching Ghostty terminal was found, such as
-/// a remote session with no local tty. Logs rather than fails: raising the
-/// wrong (or no) window should never stop the pane from being focused inside
-/// Herdr.
+/// a remote session or a socket this host isn't serving. Logs rather than
+/// fails: raising the wrong (or no) window should never stop the pane from
+/// being focused inside Herdr.
 #[cfg(target_os = "macos")]
 fn activate_ghostty_app() {
     match Command::new("open").args(["-a", ACTIVATE_APP]).status() {
@@ -274,54 +276,94 @@ fn activate_ghostty_app() {
     }
 }
 
-/// Raise the specific Ghostty window/tab hosting `pane_id`, identified by the
-/// pane's tty. Returns false when the tty is unavailable (a remote session,
-/// or the socket call failed) or no Ghostty terminal reports that tty, so the
+/// Raise the specific Ghostty window/tab serving `socket_path`. Returns false
+/// when the session's own OS process can't be identified (a remote session,
+/// or the socket call failed) or no Ghostty terminal reports that pid, so the
 /// caller can fall back to activating the app.
+///
+/// A Herdr session multiplexes every internal pane and tab inside a single
+/// outer PTY, so Ghostty only ever sees one `terminal` surface per Herdr
+/// session, not one per pane. That surface's process is the `herdr` client
+/// Ghostty itself launched, which is the parent of the `herdr server`
+/// process holding the session's socket open.
 #[cfg(target_os = "macos")]
-fn focus_ghostty_terminal_for_pane(client: &SocketClient, pane_id: &str) -> bool {
-    let Some(tty) = pane_tty(client, pane_id) else {
+fn focus_ghostty_terminal_for_session(socket_path: &str) -> bool {
+    let Some(pid) = herdr_client_pid(socket_path) else {
         return false;
     };
-    run_applescript(&focus_terminal_by_tty_script(&tty))
+    run_applescript(&focus_terminal_by_pid_script(pid))
 }
 
+/// The pid of the `herdr` client process Ghostty launched for `socket_path`.
+///
+/// Connects to the session's own socket and reads the peer's pid directly
+/// via the `LOCAL_PEERPID` socket option (the `herdr server` process
+/// accepting the connection), then reads that process's parent pid via
+/// `proc_pidinfo`, which is the `herdr` client Ghostty launched. Both steps
+/// use the same libproc/sysctl primitives `lsof`/`ps` are built on, without
+/// spawning either.
 #[cfg(target_os = "macos")]
-fn pane_tty(client: &SocketClient, pane_id: &str) -> Option<String> {
-    let response = client
-        .send(
-            "cast:pane-process-info",
-            "pane.process_info",
-            json!({ "pane_id": pane_id }),
+fn herdr_client_pid(socket_path: &str) -> Option<u32> {
+    use std::os::unix::io::AsRawFd;
+    use std::os::unix::net::UnixStream;
+
+    let stream = UnixStream::connect(socket_path).ok()?;
+    let server_pid = peer_pid(stream.as_raw_fd())?;
+    parent_pid(server_pid)
+}
+
+/// The pid on the other end of a connected Unix domain socket.
+#[cfg(target_os = "macos")]
+fn peer_pid(fd: std::os::unix::io::RawFd) -> Option<u32> {
+    let mut pid: libc::pid_t = 0;
+    let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
+    let result = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERPID,
+            &mut pid as *mut _ as *mut libc::c_void,
+            &mut len,
         )
-        .ok()?;
-    string_at(&response, "/result/process_info/tty")
+    };
+    (result == 0 && pid > 0).then_some(pid as u32)
+}
+
+/// The parent pid of `pid`, read via `proc_pidinfo`.
+#[cfg(target_os = "macos")]
+fn parent_pid(pid: u32) -> Option<u32> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
+    let result = unsafe {
+        libc::proc_pidinfo(
+            pid as libc::c_int,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            &mut info as *mut _ as *mut libc::c_void,
+            size,
+        )
+    };
+    (result == size && info.pbi_ppid > 0).then_some(info.pbi_ppid)
 }
 
 /// AppleScript that walks every Ghostty terminal surface across every window
 /// and tab (the `terminals` element on `application` is flattened), and
-/// focuses the one whose tty matches. Ghostty's `focus` command brings that
-/// terminal's window and tab to the front directly, so no separate app
-/// activation step is needed on success.
+/// focuses the one whose foreground pid matches. Ghostty's `focus` command
+/// brings that terminal's window and tab to the front directly, so no
+/// separate app activation step is needed on success.
 #[cfg(target_os = "macos")]
-fn focus_terminal_by_tty_script(tty: &str) -> String {
+fn focus_terminal_by_pid_script(pid: u32) -> String {
     format!(
         r#"tell application "Ghostty"
     repeat with candidate in terminals
-        if tty of candidate is {quoted} then
+        if pid of candidate is {pid} then
             focus candidate
             return true
         end if
     end repeat
     return false
-end tell"#,
-        quoted = applescript_quote(tty)
+end tell"#
     )
-}
-
-#[cfg(target_os = "macos")]
-fn applescript_quote(value: &str) -> String {
-    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 #[cfg(target_os = "macos")]
@@ -630,20 +672,10 @@ mod tests {
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn quotes_applescript_string_literals() {
-        assert_eq!(applescript_quote("/dev/ttys002"), "\"/dev/ttys002\"");
-        assert_eq!(
-            applescript_quote(r#"a "quoted" \ value"#),
-            r#""a \"quoted\" \\ value""#
-        );
-    }
-
-    #[test]
-    #[cfg(target_os = "macos")]
-    fn builds_a_script_that_matches_the_terminal_by_tty_and_focuses_it() {
-        let script = focus_terminal_by_tty_script("/dev/ttys002");
+    fn builds_a_script_that_matches_the_terminal_by_pid_and_focuses_it() {
+        let script = focus_terminal_by_pid_script(1760);
         assert!(script.contains(r#"tell application "Ghostty""#));
-        assert!(script.contains(r#"if tty of candidate is "/dev/ttys002" then"#));
+        assert!(script.contains("if pid of candidate is 1760 then"));
         assert!(script.contains("focus candidate"));
         assert!(script.contains("return false"));
     }
