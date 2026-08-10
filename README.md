@@ -238,6 +238,17 @@ On macOS, after the first notification event, grant notification access under
 **System Settings → Notifications → herdr → Allow**. The grant is tied to the
 bundled app's `codes.dot.herdr-notify` bundle id.
 
+Clicking a notification also asks macOS to let the bundled app control
+Ghostty (Automation access), so it can raise the exact window/tab a
+notification came from instead of just activating the app. Grant this the
+first time a system dialog asks; if it's missed or times out, macOS caches a
+denial and clicking silently falls back to activating Ghostty without
+switching tabs. Reset a stuck denial with:
+
+```sh
+tccutil reset AppleEvents codes.dot.herdr-notify
+```
+
 This repository's local development checkout may already be linked. Do not
 relink it during routine development.
 
