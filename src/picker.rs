@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 use std::io::{self, Stdout};
+use std::sync::mpsc::Receiver;
 
 use crossterm::{
     cursor::Show,
@@ -458,7 +459,7 @@ enum InputOutcome {
 }
 
 pub fn pick<T>(picker: Picker<'_>, choices: Vec<Choice<T>>) -> Result<Option<T>, String> {
-    pick_inner(picker, choices, |_| None).map(|(selection, _)| selection)
+    pick_inner(picker, choices, |_| None, None).map(|(selection, _)| selection)
 }
 
 pub fn pick_with_detail<T, F>(
@@ -469,13 +470,27 @@ pub fn pick_with_detail<T, F>(
 where
     F: FnMut(&T) -> Option<String>,
 {
-    pick_inner(picker, choices, detail_loader)
+    pick_inner(picker, choices, detail_loader, None)
+}
+
+/// Opens the picker immediately with no choices, appending each choice as it
+/// arrives on `receiver`. Use this when gathering choices (a directory scan,
+/// a slow API call) takes long enough that the picker should be visible and
+/// already searchable before it finishes, instead of leaving the popup blank
+/// until every choice is in hand. A disconnected or exhausted `receiver` just
+/// stops growing the list; it does not close the picker.
+pub fn pick_streaming<T>(
+    picker: Picker<'_>,
+    receiver: Receiver<Choice<T>>,
+) -> Result<Option<T>, String> {
+    pick_inner(picker, Vec::new(), |_| None, Some(receiver)).map(|(selection, _)| selection)
 }
 
 fn pick_inner<T, F>(
     picker: Picker<'_>,
     mut choices: Vec<Choice<T>>,
     mut detail_loader: F,
+    refill: Option<Receiver<Choice<T>>>,
 ) -> Result<(Option<T>, usize), String>
 where
     F: FnMut(&T) -> Option<String>,
@@ -491,6 +506,35 @@ where
     let mut details_loaded = HashSet::new();
 
     let outcome = loop {
+        // Every loop tick (at most every 80ms, via the poll timeout below),
+        // fold in whatever the background sender has produced since the last
+        // tick, so a slow scan or API call fills the list in while the user
+        // is already looking at and searching the picker.
+        if let Some(receiver) = refill.as_ref() {
+            let mut appended = false;
+            while let Ok(choice) = receiver.try_recv() {
+                choices.push(choice);
+                appended = true;
+            }
+            if appended {
+                // `update_matches` always resets `selected` to the top match,
+                // which would otherwise yank the cursor away from a row the
+                // user already navigated to every time a new batch lands.
+                // `choices` only grows (existing entries keep their index),
+                // so recover the same row in the freshly computed matches.
+                let previously_selected = state.matches.get(state.selected).copied();
+                state.update_matches(&choices);
+                if let Some(previous_index) = previously_selected {
+                    if let Some(position) = state
+                        .matches
+                        .iter()
+                        .position(|&index| index == previous_index)
+                    {
+                        state.selected = position;
+                    }
+                }
+            }
+        }
         if let Some(index) = state.matches.get(state.selected).copied() {
             if details_loaded.insert(index) {
                 if let Some(detail) = detail_loader(&choices[index].value) {

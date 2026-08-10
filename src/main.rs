@@ -1,4 +1,5 @@
 mod api;
+mod lazygit;
 mod notify;
 mod palette;
 mod picker;
@@ -28,6 +29,7 @@ fn main() {
             workspace::create_from_directory()
         }
         Some("workspace-picker") if arguments.next().is_none() => workspace::focus_existing(),
+        Some("lazygit") if arguments.next().is_none() => lazygit::run(),
         Some("sync-space") => match (arguments.next().as_deref(), arguments.next()) {
             (None, _) => space::sync(false),
             (Some("--await-remote"), None) => space::sync(true),
@@ -54,7 +56,7 @@ fn main() {
         }
         _ => Err(concat!(
             "usage: herdr-cast <record-focus|notify|palette|directory-workspace|workspace-picker",
-            "|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
+            "|lazygit|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
     };

@@ -389,7 +389,7 @@ fn home() -> PathBuf {
 
 /// Nearest ancestor holding a `.git` entry. Worktrees store a file there
 /// rather than a directory, so both count.
-fn repository_root(cwd: &Path) -> Option<PathBuf> {
+pub(crate) fn repository_root(cwd: &Path) -> Option<PathBuf> {
     cwd.ancestors()
         .find(|directory| directory.join(".git").exists())
         .map(Path::to_path_buf)

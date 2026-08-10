@@ -319,7 +319,18 @@ command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entryp
 description = "focus an existing workspace or pane"
 key = "prefix+space"
 type = "shell"
+
+[[keys.command]]
+command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint lazygit'
+description = "open lazygit"
+key = "prefix+g"
+type = "shell"
 ```
+
+The `lazygit` entrypoint replaces a bare `command = "lazygit"` popup key. It
+opens lazygit directly when the focused pane sits in (or is) a repository,
+and otherwise fuzzy-picks one from the repositories found up to 3 levels
+below it, instead of lazygit's own no-repository error.
 
 ## Shell integration
 

@@ -86,3 +86,15 @@ placement = "popup"
 width = "37%"
 height = "33%"
 command = ["herdr-cast", "workspace-picker"]
+
+# Open lazygit against the focused pane's own repository, or, when it isn't
+# inside one, fuzzy-pick a repository found up to 3 levels below it. Replaces
+# a bare `command = "lazygit"` popup key, which errors outside a repository.
+[[panes]]
+id = "lazygit"
+title = "lazygit"
+platforms = ["macos", "linux"]
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["herdr-cast", "lazygit"]

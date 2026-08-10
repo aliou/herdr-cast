@@ -131,7 +131,7 @@ fn plugin_context() -> Value {
         .unwrap_or_default()
 }
 
-fn focused_pane_id() -> Option<String> {
+pub(crate) fn focused_pane_id() -> Option<String> {
     std::env::var("HERDR_PANE_ID").ok().or_else(|| {
         plugin_context()
             .get("focused_pane_id")
