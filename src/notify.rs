@@ -233,23 +233,113 @@ fn deliver_terminal_notification(client: Option<&SocketClient>, title: String, b
 }
 
 pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
-    #[cfg(target_os = "macos")]
-    {
-        let activation = Command::new("open")
-            .args(["-a", ACTIVATE_APP])
-            .status()
-            .map_err(|error| format!("failed to activate {ACTIVATE_APP}: {error}"))?;
-        if !activation.success() {
-            return Err(format!("failed to activate {ACTIVATE_APP}: {activation}"));
-        }
-    }
+    let client = SocketClient::new(socket_path);
 
-    SocketClient::new(socket_path).send(
+    // Focus the pane inside Herdr first. Raising the right macOS window is
+    // best-effort and can involve a slow or hung `osascript`/socket call;
+    // it must never delay or block the actual pane focus.
+    client.send(
         "cast:notification-focus",
         "agent.focus",
         json!({ "target": pane_id }),
     )?;
+
+    #[cfg(target_os = "macos")]
+    {
+        // `open -a Ghostty` only activates the app, i.e. whatever Ghostty
+        // window macOS last treated as key. With more than one Ghostty
+        // window open (one per Herdr session, say), that can raise the
+        // wrong window entirely. Prefer raising the exact terminal surface
+        // this pane runs in, matched by tty through Ghostty's own
+        // AppleScript `focus` command, which brings its window and tab
+        // forward directly.
+        if !focus_ghostty_terminal_for_pane(&client, pane_id) {
+            activate_ghostty_app();
+        }
+    }
+
     Ok(())
+}
+
+/// Best-effort fallback when no matching Ghostty terminal was found, such as
+/// a remote session with no local tty. Logs rather than fails: raising the
+/// wrong (or no) window should never stop the pane from being focused inside
+/// Herdr.
+#[cfg(target_os = "macos")]
+fn activate_ghostty_app() {
+    match Command::new("open").args(["-a", ACTIVATE_APP]).status() {
+        Ok(status) if status.success() => {}
+        Ok(status) => log(&format!("failed to activate {ACTIVATE_APP}: {status}")),
+        Err(error) => log(&format!("failed to activate {ACTIVATE_APP}: {error}")),
+    }
+}
+
+/// Raise the specific Ghostty window/tab hosting `pane_id`, identified by the
+/// pane's tty. Returns false when the tty is unavailable (a remote session,
+/// or the socket call failed) or no Ghostty terminal reports that tty, so the
+/// caller can fall back to activating the app.
+#[cfg(target_os = "macos")]
+fn focus_ghostty_terminal_for_pane(client: &SocketClient, pane_id: &str) -> bool {
+    let Some(tty) = pane_tty(client, pane_id) else {
+        return false;
+    };
+    run_applescript(&focus_terminal_by_tty_script(&tty))
+}
+
+#[cfg(target_os = "macos")]
+fn pane_tty(client: &SocketClient, pane_id: &str) -> Option<String> {
+    let response = client
+        .send(
+            "cast:pane-process-info",
+            "pane.process_info",
+            json!({ "pane_id": pane_id }),
+        )
+        .ok()?;
+    string_at(&response, "/result/process_info/tty")
+}
+
+/// AppleScript that walks every Ghostty terminal surface across every window
+/// and tab (the `terminals` element on `application` is flattened), and
+/// focuses the one whose tty matches. Ghostty's `focus` command brings that
+/// terminal's window and tab to the front directly, so no separate app
+/// activation step is needed on success.
+#[cfg(target_os = "macos")]
+fn focus_terminal_by_tty_script(tty: &str) -> String {
+    format!(
+        r#"tell application "Ghostty"
+    repeat with candidate in terminals
+        if tty of candidate is {quoted} then
+            focus candidate
+            return true
+        end if
+    end repeat
+    return false
+end tell"#,
+        quoted = applescript_quote(tty)
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn applescript_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
+#[cfg(target_os = "macos")]
+fn run_applescript(script: &str) -> bool {
+    match Command::new("osascript").arg("-e").arg(script).output() {
+        Ok(output) if output.status.success() => {
+            String::from_utf8_lossy(&output.stdout).trim() == "true"
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
+            log(&format!("osascript failed: {}", truncate(&stderr, 500)));
+            false
+        }
+        Err(error) => {
+            log(&format!("failed to run osascript: {error}"));
+            false
+        }
+    }
 }
 
 impl Paths {
@@ -536,6 +626,26 @@ mod tests {
     fn encodes_state_file_keys_without_collisions_or_path_characters() {
         assert_eq!(hex_key("w1:p1/../../x"), "77313a70312f2e2e2f2e2e2f78");
         assert_ne!(hex_key("w1:p1"), hex_key("w1_p1"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn quotes_applescript_string_literals() {
+        assert_eq!(applescript_quote("/dev/ttys002"), "\"/dev/ttys002\"");
+        assert_eq!(
+            applescript_quote(r#"a "quoted" \ value"#),
+            r#""a \"quoted\" \\ value""#
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn builds_a_script_that_matches_the_terminal_by_tty_and_focuses_it() {
+        let script = focus_terminal_by_tty_script("/dev/ttys002");
+        assert!(script.contains(r#"tell application "Ghostty""#));
+        assert!(script.contains(r#"if tty of candidate is "/dev/ttys002" then"#));
+        assert!(script.contains("focus candidate"));
+        assert!(script.contains("return false"));
     }
 
     #[test]
