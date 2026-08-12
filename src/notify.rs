@@ -45,7 +45,6 @@ struct NotificationShowParams {
 }
 
 struct Paths {
-    root: PathBuf,
     state: PathBuf,
     app: PathBuf,
     notifier: PathBuf,
@@ -122,9 +121,9 @@ pub fn run() -> Result<(), String> {
     if is_debounced(&paths.state, pane_id, &status)? {
         return Ok(());
     }
-    let (title, icon_name) = match status.as_str() {
-        "blocked" => (format!("⏳ {agent} needs input"), "blocked.png"),
-        "done" => (format!("✅ {agent} done"), "done.png"),
+    let (title, sound_name) = match status.as_str() {
+        "blocked" => (format!("⏳ {agent} needs input"), "Glass"),
+        "done" => (format!("✅ {agent} done"), "Funk"),
         _ => return Ok(()),
     };
     let body = format!("{workspace} · {worktree}");
@@ -136,7 +135,7 @@ pub fn run() -> Result<(), String> {
             pane_id,
             title,
             body,
-            icon_name,
+            sound_name,
         )?;
     } else {
         deliver_terminal_notification(client.as_ref(), title, body);
@@ -151,7 +150,7 @@ fn deliver_macos_notification(
     pane_id: &str,
     title: String,
     body: String,
-    icon_name: &str,
+    sound_name: &str,
 ) -> Result<(), String> {
     if !paths.notifier.is_file() {
         log("bundled HerdrNotify.app executable is missing");
@@ -160,9 +159,6 @@ fn deliver_macos_notification(
     if !ensure_notifier_registered(paths) {
         return Ok(());
     }
-
-    let icon = paths.root.join("assets/icons").join(icon_name);
-
     let mut args = vec![
         "-title".to_string(),
         title,
@@ -170,11 +166,9 @@ fn deliver_macos_notification(
         body,
         "-group".to_string(),
         pane_id.to_string(),
+        "-sound".to_string(),
+        sound_name.to_string(),
     ];
-    if icon.is_file() {
-        args.push("-contentImage".to_string());
-        args.push(icon.to_string_lossy().into_owned());
-    }
     if let Some(socket_path) = socket_path {
         let current_exe = std::env::current_exe()
             .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
@@ -396,7 +390,6 @@ impl Paths {
         let app = root.join("assets/HerdrNotify.app");
         let notifier = app.join("Contents/MacOS/terminal-notifier");
         Ok(Self {
-            root,
             state,
             app,
             notifier,
