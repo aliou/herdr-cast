@@ -114,10 +114,15 @@ injected state directory, never in the source checkout.
 
 ## Development behavior
 
-- Rust changes require rebuilding `target/release/herdr-cast`; do not relink.
-  The plugin resolves the `herdr-cast` command through `PATH`, so a local
-  build only takes effect if its directory precedes the Nix-installed
-  `herdr-cast` on the Herdr server's `PATH`.
+- `~/.local/bin/herdr-cast` is the single command path Herdr and shells should
+  resolve. In normal use it must be a symlink to the Nix-packaged
+  `herdr-cast`, managed by the homelab Home Manager module at
+  `~/code/src/code.378labs.dev/homelab/modules/modules/programs/herdr/default.nix`.
+- Rust changes do not affect runtime until tested through that command path.
+  For local runtime testing only, build `target/release/herdr-cast`, temporarily
+  point `~/.local/bin/herdr-cast` at this checkout's release binary, run the
+  disposable-session test, then restore `~/.local/bin/herdr-cast` to the Nix
+  store path. Do not leave the symlink pointing at `target/release/herdr-cast`.
 - `herdr plugin link` does not run manifest `[[build]]` commands.
 - Manifest changes require registration refresh or a newly loaded server to be
   observed. Test them with the temporary-id workflow above, not by disturbing
