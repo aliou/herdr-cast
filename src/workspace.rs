@@ -6,7 +6,10 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
-use crate::picker::{pick_with_detail, Choice, ChoiceStatus, OrderToggle, Picker, ToggleKind};
+use crate::picker::{
+    pick_with_detail, pick_with_detail_and_query_choice, Choice, ChoiceStatus, OrderToggle, Picker,
+    ToggleKind,
+};
 use crate::space;
 use crate::zoxide::{self, RankedDirectory};
 
@@ -112,6 +115,10 @@ pub fn create_from_directory() -> Result<(), String> {
     if directories.is_empty() {
         return Err("zoxide has no ranked directories".to_string());
     }
+    let normalized_directories = directories
+        .iter()
+        .map(|directory| normalize_path(&directory.path))
+        .collect::<std::collections::BTreeSet<_>>();
     let choices = directories
         .into_iter()
         .map(|directory| {
@@ -119,7 +126,7 @@ pub fn create_from_directory() -> Result<(), String> {
             directory_choice(directory, existing.get(&normalized))
         })
         .collect();
-    let (target, _alphabetical) = pick_with_detail(
+    let (target, _alphabetical) = pick_with_detail_and_query_choice(
         Picker {
             placeholder: "Search ranked directories",
             empty_message: "No matching directories",
@@ -131,6 +138,7 @@ pub fn create_from_directory() -> Result<(), String> {
         },
         choices,
         |_| None,
+        |query| typed_directory_choice(query, &normalized_directories, &existing),
     )?;
     let Some(target) = target else {
         return Ok(());
@@ -337,6 +345,42 @@ fn directory_choice(
     .preserve_primary_order_in_search()
     .match_kind(crate::picker::MatchKind::Zoxide)
     .with_match_text(directory.path.to_string_lossy())
+}
+
+fn typed_directory_choice(
+    query: &str,
+    ranked_directories: &std::collections::BTreeSet<PathBuf>,
+    existing: &BTreeMap<PathBuf, ExistingWorkspace>,
+) -> Option<Choice<DirectoryTarget>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return None;
+    }
+    let path = zoxide::expand_home(query);
+    if !path.is_dir() {
+        return None;
+    }
+    let normalized = normalize_path(&path);
+    if ranked_directories.contains(&normalized) {
+        return None;
+    }
+    let target = existing
+        .get(&normalized)
+        .map(|workspace| DirectoryTarget::Focus(workspace.workspace_id.clone()))
+        .unwrap_or_else(|| DirectoryTarget::Create(path.clone()));
+    let display = compact_home(&path);
+    Some(
+        Choice::new(
+            target,
+            format!("Open in {}/", display.trim_end_matches('/')),
+            None::<String>,
+            format!("{display} {}", path.to_string_lossy()),
+        )
+        .highlighted(existing.contains_key(&normalized))
+        .preserve_primary_order_in_search()
+        .match_kind(crate::picker::MatchKind::Zoxide)
+        .with_match_text(path.to_string_lossy()),
+    )
 }
 
 #[cfg(test)]

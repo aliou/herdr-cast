@@ -170,6 +170,37 @@ pub fn keywords_match(path: &str, query: &str) -> bool {
     true
 }
 
+pub fn path_query_match(path: &Path, query: &str) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let expanded = expand_home(query);
+    let path_text = path.to_string_lossy().to_lowercase();
+    let compact = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .and_then(|home| {
+            path.strip_prefix(&home)
+                .ok()
+                .map(|relative| format!("~/{}", relative.display()).to_lowercase())
+        });
+    let expanded = expanded.to_string_lossy().to_lowercase();
+    path_text.contains(&expanded) || compact.as_deref().is_some_and(|text| text.contains(query))
+}
+
+pub fn expand_home(query: &str) -> PathBuf {
+    if query == "~" || query.starts_with("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            let mut path = PathBuf::from(home);
+            if query.len() > 2 {
+                path.push(&query[2..]);
+            }
+            return path;
+        }
+    }
+    PathBuf::from(query)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

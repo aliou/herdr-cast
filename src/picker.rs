@@ -298,7 +298,12 @@ impl PickerState {
                     let choice = &choices[index];
                     if !ranks_by_alternate_order && choice.match_kind == MatchKind::Zoxide {
                         let text = choice.match_text.as_deref().unwrap_or(&choice.search_text);
-                        crate::zoxide::keywords_match(text, &self.query).then_some((index, 0))
+                        (crate::zoxide::keywords_match(text, &self.query)
+                            || crate::zoxide::path_query_match(
+                                std::path::Path::new(text),
+                                &self.query,
+                            ))
+                        .then_some((index, 0))
                     } else {
                         fuzzy_score(&choice.search_text, &self.query).map(|score| (index, score))
                     }
@@ -459,7 +464,7 @@ enum InputOutcome {
 }
 
 pub fn pick<T>(picker: Picker<'_>, choices: Vec<Choice<T>>) -> Result<Option<T>, String> {
-    pick_inner(picker, choices, |_| None, None).map(|(selection, _)| selection)
+    pick_inner(picker, choices, |_| None, None, |_| None).map(|(selection, _)| selection)
 }
 
 pub fn pick_with_detail<T, F>(
@@ -470,7 +475,20 @@ pub fn pick_with_detail<T, F>(
 where
     F: FnMut(&T) -> Option<String>,
 {
-    pick_inner(picker, choices, detail_loader, None)
+    pick_inner(picker, choices, detail_loader, None, |_| None)
+}
+
+pub fn pick_with_detail_and_query_choice<T, F, Q>(
+    picker: Picker<'_>,
+    choices: Vec<Choice<T>>,
+    detail_loader: F,
+    query_choice: Q,
+) -> Result<(Option<T>, usize), String>
+where
+    F: FnMut(&T) -> Option<String>,
+    Q: FnMut(&str) -> Option<Choice<T>>,
+{
+    pick_inner(picker, choices, detail_loader, None, query_choice)
 }
 
 /// Opens the picker immediately with no choices, appending each choice as it
@@ -483,23 +501,33 @@ pub fn pick_streaming<T>(
     picker: Picker<'_>,
     receiver: Receiver<Choice<T>>,
 ) -> Result<Option<T>, String> {
-    pick_inner(picker, Vec::new(), |_| None, Some(receiver)).map(|(selection, _)| selection)
+    pick_inner(picker, Vec::new(), |_| None, Some(receiver), |_| None)
+        .map(|(selection, _)| selection)
 }
 
-fn pick_inner<T, F>(
+fn pick_inner<T, F, Q>(
     picker: Picker<'_>,
     mut choices: Vec<Choice<T>>,
     mut detail_loader: F,
     refill: Option<Receiver<Choice<T>>>,
+    mut query_choice: Q,
 ) -> Result<(Option<T>, usize), String>
 where
     F: FnMut(&T) -> Option<String>,
+    Q: FnMut(&str) -> Option<Choice<T>>,
 {
     let mut session = TerminalSession::start()?;
     let order_view_count = picker.order.map(|order| order.labels.len()).unwrap_or(0);
     let mut state = PickerState::new_with_view(
         &choices,
         picker.order.map(|order| order.initial).unwrap_or(0),
+    );
+    let mut has_query_choice = false;
+    sync_query_choice(
+        &mut choices,
+        &mut state,
+        &mut has_query_choice,
+        &mut query_choice,
     );
     state.update_matches(&choices);
     state.select_previous(&choices);
@@ -564,8 +592,19 @@ where
         }
         let event =
             event::read().map_err(|error| format!("failed to read picker input: {error}"))?;
+        let previous_query = state.query.clone();
         match handle_event(event, &mut state, &choices, order_view_count) {
-            InputOutcome::Continue => {}
+            InputOutcome::Continue => {
+                if state.query != previous_query {
+                    details_loaded.clear();
+                    sync_query_choice(
+                        &mut choices,
+                        &mut state,
+                        &mut has_query_choice,
+                        &mut query_choice,
+                    );
+                }
+            }
             InputOutcome::Select(index) => break Some(index),
             InputOutcome::Cancel => break None,
         }
@@ -581,6 +620,25 @@ where
             .value
     });
     Ok((selection, view))
+}
+
+fn sync_query_choice<T, Q>(
+    choices: &mut Vec<Choice<T>>,
+    state: &mut PickerState,
+    has_query_choice: &mut bool,
+    query_choice: &mut Q,
+) where
+    Q: FnMut(&str) -> Option<Choice<T>>,
+{
+    if *has_query_choice {
+        choices.remove(0);
+        *has_query_choice = false;
+    }
+    if let Some(choice) = query_choice(&state.query) {
+        choices.insert(0, choice);
+        *has_query_choice = true;
+    }
+    state.update_matches(choices);
 }
 
 fn handle_event<T>(
