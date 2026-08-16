@@ -9,14 +9,6 @@ use serde_json::{json, Value};
 use crate::api::SocketClient;
 
 const TRIGGER_STATUSES: &[&str] = &["blocked", "done"];
-const TERMINAL_APP_IDS: &[&str] = &[
-    "com.mitchellh.ghostty",
-    "com.apple.Terminal",
-    "com.googlecode.iterm2",
-    "net.kovidgoyal.kitty",
-    "com.github.wez.wezterm",
-    "org.alacritty",
-];
 const ACTIVATE_APP: &str = "Ghostty";
 const DEBOUNCE_SECONDS: u64 = 2;
 const REGISTER_TTL_SECONDS: u64 = 6 * 60 * 60;
@@ -101,22 +93,6 @@ pub fn run() -> Result<(), String> {
         .and_then(|path| Path::new(path).file_name())
         .and_then(|name| name.to_str())
         .unwrap_or(&workspace);
-
-    // Suppress only when this exact pane is the one on screen: its
-    // workspace is focused, its tab is the workspace's active tab, and it is
-    // the focused pane within that tab (Herdr's `pane.focused`). Comparing
-    // workspace focus alone would suppress every pane in a multi-tab
-    // workspace, including background tabs the user cannot see.
-    if cfg!(target_os = "macos") {
-        let pane_focused = bool_at(&pane, "/result/pane/focused").unwrap_or(false);
-        if pane_focused {
-            if let Some(frontmost) = frontmost_bundle_id() {
-                if TERMINAL_APP_IDS.contains(&frontmost.as_str()) {
-                    return Ok(());
-                }
-            }
-        }
-    }
 
     if is_debounced(&paths.state, pane_id, &status)? {
         return Ok(());
@@ -429,35 +405,6 @@ fn string_at(value: &Value, pointer: &str) -> Option<String> {
     value.pointer(pointer)?.as_str().map(str::to_owned)
 }
 
-fn bool_at(value: &Value, pointer: &str) -> Option<bool> {
-    value.pointer(pointer)?.as_bool()
-}
-
-fn frontmost_bundle_id() -> Option<String> {
-    let front = Command::new("lsappinfo").arg("front").output().ok()?;
-    if !front.status.success() {
-        return None;
-    }
-    let asn = String::from_utf8(front.stdout).ok()?;
-    let info = Command::new("lsappinfo")
-        .args(["info", "-only", "bundleid", asn.trim()])
-        .output()
-        .ok()?;
-    if !info.status.success() {
-        return None;
-    }
-    parse_bundle_id(&String::from_utf8(info.stdout).ok()?)
-}
-
-fn parse_bundle_id(output: &str) -> Option<String> {
-    let (_, value) = output.split_once('=')?;
-    let value = value.trim();
-    value
-        .strip_prefix('"')?
-        .strip_suffix('"')
-        .map(str::to_owned)
-}
-
 fn is_debounced(state_dir: &Path, pane_id: &str, status: &str) -> Result<bool, String> {
     let key = format!("{}-{}", hex_key(pane_id), hex_key(status));
     let path = state_dir.join(format!("debounce-{key}"));
@@ -633,29 +580,6 @@ fn log(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn parses_frontmost_bundle_id() {
-        assert_eq!(
-            parse_bundle_id("\"CFBundleIdentifier\"=\"com.mitchellh.ghostty\"\n"),
-            Some("com.mitchellh.ghostty".into())
-        );
-        assert_eq!(parse_bundle_id("unexpected"), None);
-    }
-
-    #[test]
-    fn reads_the_pane_focused_flag_from_a_pane_get_response() {
-        let response = json!({
-            "result": {
-                "pane": {
-                    "pane_id": "w1:p1",
-                    "focused": true
-                }
-            }
-        });
-        assert_eq!(bool_at(&response, "/result/pane/focused"), Some(true));
-        assert_eq!(bool_at(&Value::Null, "/result/pane/focused"), None);
-    }
 
     #[test]
     fn encodes_state_file_keys_without_collisions_or_path_characters() {

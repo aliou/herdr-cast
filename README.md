@@ -38,20 +38,18 @@ Flip a two-pane split, then move a pane into a new workspace.
 ### Agent notifications
 
 - Posts notifications for Herdr's `blocked` and `done` agent statuses.
-- On macOS, uses the bundled, rebranded `HerdrNotify.app` with Herdr status
-  artwork.
+- On macOS, uses the bundled, rebranded `HerdrNotify.app`.
 - On Linux, asks Herdr to show the notification through the attached terminal
   client with sound disabled. Herdr handles the terminal notification path.
 - Includes the agent, workspace, and working-directory context.
 - Groups notifications by pane and debounces duplicate pane/status events for
   two seconds.
-- On macOS, suppresses a notification only when its Herdr workspace is focused
-  and a supported terminal is the frontmost app.
-- Fails open when Herdr enrichment or macOS frontmost-app detection is
-  unavailable.
+- Delivers every triggered notification regardless of pane, tab, workspace, or
+  frontmost-app focus; nothing is suppressed for being on screen.
+- Plays a status sound on macOS (`Glass` for blocked, `Funk` for done).
+- Fails open when Herdr enrichment is unavailable.
 - Verifies the notifier signature before signing and refreshes Launch Services
   registration on a six-hour TTL on macOS.
-- Keeps sound out of the plugin so another integration can own audio playback.
 
 Clicking a notification raises Ghostty and asks Herdr to focus the exact pane
 from the original event on macOS. Linux terminal notifications are not

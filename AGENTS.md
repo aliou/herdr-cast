@@ -77,9 +77,8 @@ request/response contract.
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
-  state, Herdr enrichment, macOS frontmost-app detection, macOS notifier
-  registration and delivery, Linux terminal notification requests, and macOS
-  click-to-focus.
+  state, Herdr enrichment, macOS notifier registration and delivery, Linux
+  terminal notification requests, and macOS click-to-focus.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a split or move the focused pane to a new workspace.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
@@ -160,9 +159,10 @@ runtime invocation.
   shell. Keep every generated argument single-quoted and unit-test paths and
   pane IDs containing spaces, quotes, and shell metacharacters.
 - Keep notification sound out of this plugin; it owns visual delivery only.
-- Preserve macOS focused-workspace suppression: suppress only when both the
-  Herdr workspace is focused and a supported terminal app is frontmost. Linux
-  does not run this frontmost-app check.
+- Deliver every triggered notification regardless of pane, tab, workspace, or
+  frontmost-app focus; focus-based suppression was removed deliberately and
+  must not return without an explicit request. The debounce window and the
+  hard-coded trigger statuses are the only filters.
 - Space metadata describes the first tab's root pane, which is the pane Herdr
   uses for a Space's own Git identity and the first entry `pane.list` returns
   for a workspace. Never relabel a Space from a secondary pane.
