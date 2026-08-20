@@ -114,7 +114,7 @@ pub fn run() -> Result<(), String> {
             sound_name,
         )?;
     } else {
-        deliver_terminal_notification(client.as_ref(), title, body);
+        deliver_terminal_notification(client.as_ref(), pane_id, &status, title, body);
     }
 
     Ok(())
@@ -168,7 +168,13 @@ fn deliver_macos_notification(
     Ok(())
 }
 
-fn deliver_terminal_notification(client: Option<&SocketClient>, title: String, body: String) {
+fn deliver_terminal_notification(
+    client: Option<&SocketClient>,
+    pane_id: &str,
+    status: &str,
+    title: String,
+    body: String,
+) {
     let Some(client) = client else {
         log("HERDR_SOCKET_PATH is not set; cannot request terminal notification");
         return;
@@ -178,8 +184,8 @@ fn deliver_terminal_notification(client: Option<&SocketClient>, title: String, b
         "cast:notification-show",
         "notification.show",
         NotificationShowParams {
+            body: Some(forwarded_body(pane_id, status, &title, &body)),
             title,
-            body: Some(body),
             position: None,
             sound: "none",
         },
@@ -200,6 +206,24 @@ fn deliver_terminal_notification(client: Option<&SocketClient>, title: String, b
         }
         Err(error) => log(&format!("failed to request terminal notification: {error}")),
     }
+}
+
+/// Encode the remote-delivery payload consumed by the local HerdrNotify
+/// forwarder. Herdr's client protocol carries only title and body strings, so
+/// the forwarder's grouping key, sound policy, and display title ride inside
+/// a compact JSON body. Keep the socket title human-readable and the fields
+/// short enough that the server's 240-character body cap cannot truncate the
+/// JSON: a client without the forwarder still shows a meaningful plain
+/// notification instead of a sliced payload.
+fn forwarded_body(pane_id: &str, status: &str, title: &str, body: &str) -> String {
+    serde_json::to_string(&json!({
+        "v": 1,
+        "t": truncate(title, 64),
+        "b": truncate(body, 96),
+        "g": truncate(pane_id, 24),
+        "s": status,
+    }))
+    .unwrap_or_else(|_| body.to_string())
 }
 
 pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
@@ -612,7 +636,7 @@ mod tests {
     #[test]
     fn terminal_notification_request_disables_sound() {
         let params = NotificationShowParams {
-            title: "✅ Pi done".into(),
+            title: "Pi done".into(),
             body: Some("cast · herdr-cast".into()),
             position: None,
             sound: "none",
@@ -621,11 +645,32 @@ mod tests {
         assert_eq!(
             serde_json::to_value(params).unwrap(),
             serde_json::json!({
-                "title": "✅ Pi done",
+                "title": "Pi done",
                 "body": "cast · herdr-cast",
                 "position": null,
                 "sound": "none"
             })
         );
+    }
+
+    #[test]
+    fn forwarded_body_encodes_forwarder_payload() {
+        let body = forwarded_body("pane-1", "blocked", "pi needs input", "sbx · repo");
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["v"], 1);
+        assert_eq!(value["t"], "pi needs input");
+        assert_eq!(value["b"], "sbx · repo");
+        assert_eq!(value["g"], "pane-1");
+        assert_eq!(value["s"], "blocked");
+    }
+
+    #[test]
+    fn forwarded_body_fits_the_server_body_cap() {
+        let body = forwarded_body(&"p".repeat(40), "done", &"t".repeat(200), &"b".repeat(200));
+        assert!(body.chars().count() <= 240);
+        let value: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(value["t"], "t".repeat(64));
+        assert_eq!(value["b"], "b".repeat(96));
+        assert_eq!(value["g"], "p".repeat(24));
     }
 }
