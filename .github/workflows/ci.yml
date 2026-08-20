@@ -10,6 +10,9 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 jobs:
   test:
     name: Test
@@ -80,26 +83,26 @@ jobs:
       - name: Build target
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Stage artifact
+      - name: Stage binary
         run: |
           set -euo pipefail
           cp "target/${{ matrix.target }}/release/herdr-cast" "${{ matrix.artifact }}"
           chmod +x "${{ matrix.artifact }}"
 
-      - name: Compute the nix hash
+      - name: Upload to the unstable release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          HASH="sha256-$(openssl dgst -binary -sha256 '${{ matrix.artifact }}' | openssl base64 -A)"
-          echo "$HASH" > "${{ matrix.artifact }}.sha256"
-          echo "$HASH"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ${{ matrix.artifact }}
-          path: |
-            ${{ matrix.artifact }}
-            ${{ matrix.artifact }}.sha256
+          # Four jobs race to create the release; losing the race is fine as
+          # long as the release exists by the time we upload.
+          if ! gh release view unstable >/dev/null 2>&1; then
+            gh release create unstable --prerelease --title unstable \
+              --notes "Rolling build of the main branch. Do not use as a changelog." \
+              || gh release view unstable >/dev/null
+          fi
+          gh release upload unstable "${{ matrix.artifact }}" --clobber
 
   assets:
     name: Bundle HerdrNotify.app
@@ -109,25 +112,23 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Stage artifact
+      - name: Package the bundled notifier app
         run: |
           set -euo pipefail
           mkdir -p stage/libexec
           cp -R assets/HerdrNotify.app stage/libexec/HerdrNotify.app
           chmod +x stage/libexec/HerdrNotify.app/Contents/MacOS/terminal-notifier
+          tar -czf stage/herdr-cast-assets-darwin.tar.gz -C stage/libexec HerdrNotify.app
 
-      - name: Compute the nix hash
+      - name: Upload to the unstable release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          NOTIFIER='stage/libexec/HerdrNotify.app/Contents/MacOS/terminal-notifier'
-          HASH="sha256-$(openssl dgst -binary -sha256 "$NOTIFIER" | openssl base64 -A)"
-          echo "$HASH" > stage/herdr-cast-assets-darwin.sha256
-          echo "$HASH"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: herdr-cast-assets-darwin
-          path: |
-            stage/libexec
-            stage/herdr-cast-assets-darwin.sha256
+          if ! gh release view unstable >/dev/null 2>&1; then
+            gh release create unstable --prerelease --title unstable \
+              --notes "Rolling build of the main branch. Do not use as a changelog." \
+              || gh release view unstable >/dev/null
+          fi
+          gh release upload unstable stage/herdr-cast-assets-darwin.tar.gz --clobber

@@ -235,12 +235,13 @@ request:
 - `herdr-cast-linux-arm64`
 - `herdr-cast-linux-x64`
 
-An `assets` job also uploads `herdr-cast-assets-darwin` with
-`libexec/HerdrNotify.app`; the Nix package unpacks it next to the binary.
-
-Linux artifacts target musl so NixOS consumers can fetch and run them without
-patching a dynamic loader. Each workflow artifact has a matching `.sha256` file
-with a Nix-compatible hash for downstream package definitions.
+Linux binaries target musl so NixOS consumers can run them without patching a
+dynamic loader. On pushes to main, the build jobs and the `assets` job also
+upload the binaries and `herdr-cast-assets-darwin.tar.gz` (the bundled
+`HerdrNotify.app`) to the rolling `unstable` prerelease. The Nix package at
+`pkgs/pkgs/herdr-cast` in the homelab repo fetches everything through the
+official `releases/download/unstable/...` URLs, like the other package
+definitions.
 
 ## Documentation triggers
 

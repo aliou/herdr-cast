@@ -409,12 +409,11 @@ GitHub Actions builds binaries on every push and pull request for:
 - `herdr-cast-linux-arm64`
 - `herdr-cast-linux-x64`
 
-A separate `assets` job uploads `herdr-cast-assets-darwin`, which carries
-`assets/HerdrNotify.app` under `libexec/` for the Nix package.
-
-The CI workflow uploads each binary as a workflow artifact with a `.sha256`
-file containing the Nix-compatible `sha256-...` hash. Linux binaries target
-musl so they run on NixOS without a dynamic loader patch.
+Linux binaries target musl so they run on NixOS without a dynamic loader
+patch. On pushes to main, the build jobs and a separate `assets` job upload
+the binaries and `herdr-cast-assets-darwin.tar.gz` (the bundled
+`HerdrNotify.app`) to the rolling `unstable` prerelease, which the Nix
+package fetches through the official `releases/download/unstable/...` URLs.
 
 ## License
 
