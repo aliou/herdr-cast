@@ -67,6 +67,8 @@ struct ForwardedPayload<'a> {
     g: Option<&'a str>,
     #[serde(default)]
     s: Option<&'a str>,
+    #[serde(default)]
+    h: Option<&'a str>,
 }
 
 /// Entrypoint for the `terminal-notifier` shim the Nix package installs
@@ -117,9 +119,13 @@ fn forward_argv(arguments: &[String]) -> Vec<String> {
         (Some(parsed), Some(payload)) => (parsed, payload),
         _ => return arguments.to_vec(),
     };
-    let mut argv = Vec::with_capacity(12);
+    let mut argv = Vec::with_capacity(14);
     argv.push("-title".to_string());
     argv.push(payload.t.or(parsed.title).unwrap_or("herdr").to_string());
+    if let Some(host) = payload.h {
+        argv.push("-subtitle".to_string());
+        argv.push(host.to_string());
+    }
     argv.push("-body".to_string());
     argv.push(payload.b.unwrap_or_default().to_string());
     if let Some(group) = payload.g {
@@ -248,10 +254,6 @@ pub fn run() -> Result<(), String> {
             sound_name,
         )?;
     } else {
-        // Remote delivery: prefix the origin host so forwarded notifications
-        // say which machine (sandbox VM, remote dev box) is asking. Clicks
-        // only activate the terminal locally, so the title carries context.
-        let title = format!("{title} · {}", origin_host());
         deliver_terminal_notification(client.as_ref(), pane_id, &status, title, body);
     }
 
@@ -356,19 +358,20 @@ fn deliver_terminal_notification(
 fn forwarded_body(pane_id: &str, status: &str, title: &str, body: &str) -> String {
     serde_json::to_string(&json!({
         "v": 1,
-        "t": truncate(title, 64),
-        "b": truncate(body, 96),
+        "t": truncate(title, 48),
+        "b": truncate(body, 72),
         "g": truncate(pane_id, 24),
         "s": status,
+        "h": truncate(&origin_host(), 32),
     }))
     .unwrap_or_else(|_| body.to_string())
 }
 
-/// Origin hostname for remote-notification titles. Sandbox VMs expose
+/// Origin hostname for the payload's subtitle marker. Sandbox VMs expose
 /// their sandbox name as the hostname, which is the identifier that names
 /// the session the notification came from; on other hosts this is simply
 /// the machine name. Falls back to `remote` when the hostname cannot be
-/// read so the title never silently loses the origin marker.
+/// read so forwarded notifications never silently lose the origin marker.
 fn origin_host() -> String {
     let mut buffer = [0u8; 256];
     let result =
@@ -853,6 +856,7 @@ mod tests {
         assert_eq!(value["b"], "sbx · repo");
         assert_eq!(value["g"], "pane-1");
         assert_eq!(value["s"], "blocked");
+        assert!(value["h"].as_str().is_some_and(|host| !host.is_empty()));
     }
 
     #[test]
@@ -860,14 +864,14 @@ mod tests {
         let body = forwarded_body(&"p".repeat(40), "done", &"t".repeat(200), &"b".repeat(200));
         assert!(body.chars().count() <= 240);
         let value: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value["t"], "t".repeat(64));
-        assert_eq!(value["b"], "b".repeat(96));
+        assert_eq!(value["t"], "t".repeat(48));
+        assert_eq!(value["b"], "b".repeat(72));
         assert_eq!(value["g"], "p".repeat(24));
     }
 
     #[test]
     fn forward_argv_rewrites_a_forwarded_payload() {
-        let body = forwarded_body("w1:p1", "blocked", "pi needs input", "sbx · repo");
+        let body = r#"{"v":1,"t":"pi needs input","b":"sbx · repo","g":"w1:p1","s":"blocked","h":"donut"}"#.to_string();
         let arguments = vec![
             "-title".to_string(),
             "pi needs input".to_string(),
@@ -882,6 +886,8 @@ mod tests {
             vec![
                 "-title",
                 "pi needs input",
+                "-subtitle",
+                "donut",
                 "-body",
                 "sbx · repo",
                 "-group",
