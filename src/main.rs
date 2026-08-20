@@ -24,6 +24,7 @@ fn main() {
     let result = match arguments.next().as_deref() {
         Some("record-focus") if arguments.next().is_none() => recency::record_focus(),
         Some("notify") if arguments.next().is_none() => notify::run(),
+        Some("forward-notify") => notify::forward(arguments.collect()),
         Some("palette") if arguments.next().is_none() => palette::run(),
         Some("directory-workspace") if arguments.next().is_none() => {
             workspace::create_from_directory()
@@ -55,8 +56,8 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <record-focus|notify|palette|directory-workspace|workspace-picker",
-            "|lazygit|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
+            "usage: herdr-cast <record-focus|notify|forward-notify|palette|directory-workspace",
+            "|workspace-picker|lazygit|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
     };

@@ -9,6 +9,8 @@ use serde_json::{json, Value};
 use crate::api::SocketClient;
 
 const TRIGGER_STATUSES: &[&str] = &["blocked", "done"];
+const BLOCKED_SOUND: &str = "Glass";
+const DONE_SOUND: &str = "Funk";
 const ACTIVATE_APP: &str = "Ghostty";
 const DEBOUNCE_SECONDS: u64 = 2;
 const REGISTER_TTL_SECONDS: u64 = 6 * 60 * 60;
@@ -40,6 +42,136 @@ struct Paths {
     state: PathBuf,
     app: PathBuf,
     notifier: PathBuf,
+}
+
+/// The osascript-independent notification flags Herdr's macOS client hands
+/// to whichever `terminal-notifier` it finds on PATH (see
+/// `platform::show_desktop_notification`). `forward-notify` is that binary.
+#[derive(Default)]
+struct ClientNotifyArgs<'a> {
+    title: Option<&'a str>,
+    body: Option<&'a str>,
+    activate: Option<&'a str>,
+}
+
+/// The compact payload `forwarded_body` hides inside the notification body
+/// so grouping and sound policy survive Herdr's title/body-only protocol.
+#[derive(Deserialize)]
+struct ForwardedPayload<'a> {
+    v: u32,
+    #[serde(default)]
+    t: Option<&'a str>,
+    #[serde(default)]
+    b: Option<&'a str>,
+    #[serde(default)]
+    g: Option<&'a str>,
+    #[serde(default)]
+    s: Option<&'a str>,
+}
+
+/// Entrypoint for the `terminal-notifier` shim the Nix package installs
+/// next to herdr-cast (see AGENTS.md). Renders the notification through the
+/// bundled HerdrNotify.app. When the body carries a forwarded payload from a
+/// remote herdr-cast, rebuild the invocation with the payload's title,
+/// body, grouping, and sound; anything else (Herdr's own local toasts,
+/// generic terminal-notifier callers) passes through verbatim. `exec` keeps
+/// the process image on the bundle binary, which its NSBundle identity
+/// requires for Notification Center delivery.
+pub fn forward(arguments: Vec<String>) -> Result<(), String> {
+    let paths = Paths::from_executable()?;
+    if !paths.notifier.is_file() {
+        return Err(format!(
+            "bundled HerdrNotify.app executable is missing (expected {})",
+            paths.notifier.display()
+        ));
+    }
+    fs::create_dir_all(&paths.state)
+        .map_err(|error| format!("failed to create notifier state directory: {error}"))?;
+    let argv = forward_argv(&arguments);
+    // Unlike the plugin notify path, exit non-zero when registration cannot
+    // run: this shim is invoked by Herdr's client, which then falls back to
+    // its built-in osascript notification instead of showing nothing.
+    if cfg!(target_os = "macos") && !ensure_notifier_registered(&paths) {
+        return Err("failed to prepare HerdrNotify.app registration".to_string());
+    }
+    use std::os::unix::process::CommandExt;
+    let error = Command::new(&paths.notifier).args(&argv).exec();
+    Err(format!(
+        "failed to exec notifier {}: {error}",
+        paths.notifier.display()
+    ))
+}
+
+/// Decide the arguments handed to the bundled notifier: rebuilt when the
+/// invocation matches Herdr's exact client grammar (`-title`, `-body`,
+/// optional `-activate`) and the body decodes as a forwarded payload. Every
+/// other invocation passes through verbatim so unknown flags (today's
+/// `-timeout`, future additions) are never silently dropped.
+fn forward_argv(arguments: &[String]) -> Vec<String> {
+    let parsed = client_notify_args(arguments);
+    let payload = parsed
+        .as_ref()
+        .and_then(|parsed| parsed.body)
+        .and_then(forwarded_payload);
+    let (parsed, payload) = match (parsed, payload) {
+        (Some(parsed), Some(payload)) => (parsed, payload),
+        _ => return arguments.to_vec(),
+    };
+    let mut argv = Vec::with_capacity(12);
+    argv.push("-title".to_string());
+    argv.push(payload.t.or(parsed.title).unwrap_or("herdr").to_string());
+    argv.push("-body".to_string());
+    argv.push(payload.b.unwrap_or_default().to_string());
+    if let Some(group) = payload.g {
+        argv.push("-group".to_string());
+        argv.push(group.to_string());
+    }
+    if let Some(sound) = payload.s.and_then(sound_for_status) {
+        argv.push("-sound".to_string());
+        argv.push(sound.to_string());
+    }
+    if let Some(activate) = parsed.activate {
+        argv.push("-activate".to_string());
+        argv.push(activate.to_string());
+    }
+    argv
+}
+
+/// Parse Herdr's client notifier grammar strictly: every argument must be
+/// one of the known `-title`/`-body`/`-activate` flag/value pairs, and a
+/// body must be present. Anything else returns `None` so the caller passes
+/// the invocation through untouched.
+fn client_notify_args(arguments: &[String]) -> Option<ClientNotifyArgs<'_>> {
+    let mut parsed = ClientNotifyArgs::default();
+    let mut index = 0;
+    while index + 1 < arguments.len() {
+        let slot = match arguments[index].as_str() {
+            "-title" => &mut parsed.title,
+            "-body" => &mut parsed.body,
+            "-activate" => &mut parsed.activate,
+            _ => return None,
+        };
+        *slot = Some(arguments[index + 1].as_str());
+        index += 2;
+    }
+    (index == arguments.len() && parsed.body.is_some()).then_some(parsed)
+}
+
+fn forwarded_payload(body: &str) -> Option<ForwardedPayload<'_>> {
+    let body = body.trim_start();
+    if !body.starts_with('{') {
+        return None;
+    }
+    let payload: ForwardedPayload = serde_json::from_str(body).ok()?;
+    (payload.v == 1).then_some(payload)
+}
+
+fn sound_for_status(status: &str) -> Option<&'static str> {
+    match status {
+        "blocked" => Some(BLOCKED_SOUND),
+        "done" => Some(DONE_SOUND),
+        _ => None,
+    }
 }
 
 pub fn run() -> Result<(), String> {
@@ -98,8 +230,8 @@ pub fn run() -> Result<(), String> {
         return Ok(());
     }
     let (title, sound_name) = match status.as_str() {
-        "blocked" => (format!("⏳ {agent} needs input"), "Glass"),
-        "done" => (format!("✅ {agent} done"), "Funk"),
+        "blocked" => (format!("⏳ {agent} needs input"), BLOCKED_SOUND),
+        "done" => (format!("✅ {agent} done"), DONE_SOUND),
         _ => return Ok(()),
     };
     let body = format!("{workspace} · {worktree}");
@@ -384,9 +516,7 @@ impl Paths {
             .map(PathBuf::from)
             .or_else(|| std::env::current_dir().ok())
             .ok_or_else(|| "plugin root is unavailable".to_string())?;
-        let state = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| std::env::temp_dir().join("herdr-cast"));
+        let state = Self::state_dir();
         let app = root.join("assets/HerdrNotify.app");
         let notifier = app.join("Contents/MacOS/terminal-notifier");
         Ok(Self {
@@ -394,6 +524,36 @@ impl Paths {
             app,
             notifier,
         })
+    }
+
+    /// Resolve the bundled app for `forward-notify`, which runs in client
+    /// context (invoked via PATH) and cannot rely on `HERDR_PLUGIN_ROOT`.
+    /// The Nix package installs `bin/herdr-cast` and
+    /// `libexec/HerdrNotify.app` side by side, so the app lives two
+    /// directories up from the resolved executable. Canonicalizing matters:
+    /// the binary is usually reached through the `~/.local/bin/herdr-cast`
+    /// symlink, and `current_exe` may report the link path.
+    fn from_executable() -> Result<Self, String> {
+        let exe = std::env::current_exe()
+            .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
+        let exe = fs::canonicalize(&exe).unwrap_or(exe);
+        let prefix = exe
+            .parent()
+            .and_then(Path::parent)
+            .ok_or_else(|| format!("unexpected executable location: {}", exe.display()))?;
+        let app = prefix.join("libexec/HerdrNotify.app");
+        let notifier = app.join("Contents/MacOS/terminal-notifier");
+        Ok(Self {
+            state: Self::state_dir(),
+            app,
+            notifier,
+        })
+    }
+
+    fn state_dir() -> PathBuf {
+        std::env::var_os("HERDR_PLUGIN_STATE_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| std::env::temp_dir().join("herdr-cast"))
     }
 }
 
@@ -672,5 +832,97 @@ mod tests {
         assert_eq!(value["t"], "t".repeat(64));
         assert_eq!(value["b"], "b".repeat(96));
         assert_eq!(value["g"], "p".repeat(24));
+    }
+
+    #[test]
+    fn forward_argv_rewrites_a_forwarded_payload() {
+        let body = forwarded_body("w1:p1", "blocked", "pi needs input", "sbx · repo");
+        let arguments = vec![
+            "-title".to_string(),
+            "pi needs input".to_string(),
+            "-body".to_string(),
+            body,
+            "-activate".to_string(),
+            "com.mitchellh.ghostty".to_string(),
+        ];
+
+        assert_eq!(
+            forward_argv(&arguments),
+            vec![
+                "-title",
+                "pi needs input",
+                "-body",
+                "sbx · repo",
+                "-group",
+                "w1:p1",
+                "-sound",
+                "Glass",
+                "-activate",
+                "com.mitchellh.ghostty",
+            ]
+        );
+    }
+
+    #[test]
+    fn forward_argv_falls_back_to_the_client_title() {
+        let arguments = vec![
+            "-title".to_string(),
+            "agent done".to_string(),
+            "-body".to_string(),
+            r#"{"v":1,"b":"sbx · repo","s":"done"}"#.to_string(),
+        ];
+
+        let argv = forward_argv(&arguments);
+        assert_eq!(
+            argv,
+            vec![
+                "-title",
+                "agent done",
+                "-body",
+                "sbx · repo",
+                "-sound",
+                "Funk",
+            ]
+        );
+        assert!(!argv.windows(2).any(|pair| pair == ["-title", "herdr"]));
+    }
+
+    #[test]
+    fn forward_argv_ignores_sounds_for_unknown_statuses() {
+        let arguments = vec!["-body".to_string(), r#"{"v":1,"s":"working"}"#.to_string()];
+
+        let argv = forward_argv(&arguments);
+        assert_eq!(argv, vec!["-title", "herdr", "-body", ""]);
+    }
+
+    #[test]
+    fn forward_argv_passes_payloads_with_unknown_flags_through_verbatim() {
+        let body = forwarded_body("w1:p1", "blocked", "pi needs input", "sbx · repo");
+        let arguments = vec![
+            "-title".to_string(),
+            "pi needs input".to_string(),
+            "-body".to_string(),
+            body,
+            "-timeout".to_string(),
+            "5".to_string(),
+        ];
+        assert_eq!(forward_argv(&arguments), arguments);
+    }
+
+    #[test]
+    fn forward_argv_passes_plain_notifications_through_verbatim() {
+        for body in ["cast · herdr-cast", "\"{not json}", "{\"v\":2}"] {
+            let arguments = vec![
+                "-title".to_string(),
+                "herdr".to_string(),
+                "-body".to_string(),
+                body.to_string(),
+                "-activate".to_string(),
+                "com.mitchellh.ghostty".to_string(),
+                "-timeout".to_string(),
+                "5".to_string(),
+            ];
+            assert_eq!(forward_argv(&arguments), arguments);
+        }
     }
 }

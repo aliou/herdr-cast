@@ -73,12 +73,20 @@ request/response contract.
 - `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `notify`, `palette`, `focus`,
-  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
+- `src/main.rs`: dispatches the Rust binary's `notify`, `forward-notify`,
+  `palette`, `focus`, `sync-space`, `sync-title`, `sync-spaces`, and
+  `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, macOS notifier registration and delivery, Linux
-  terminal notification requests, and macOS click-to-focus.
+  terminal notification requests, macOS click-to-focus, and the
+  `forward-notify` receiver: the Nix package installs a `terminal-notifier`
+  shim that execs this command so Herdr's macOS client renders forwarded
+  remote payloads (grouping, sound, title/body from the v1 JSON body)
+  through HerdrNotify.app while passing every other notification through
+  verbatim. It resolves the app from `libexec/HerdrNotify.app` relative to
+  the canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it
+  runs in client context.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a split or move the focused pane to a new workspace.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
@@ -101,7 +109,9 @@ request/response contract.
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order.
 - `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve its
-  license in `assets/HerdrNotify.app.LICENSE.md`.
+  license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code finds
+  it under `assets/`; the Nix package also installs it at
+  `libexec/HerdrNotify.app` for the client-context `forward-notify` shim.
 
 Herdr runs plugin commands with the plugin root as cwd and injects runtime
 variables including `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`,
@@ -158,7 +168,9 @@ runtime invocation.
 - `terminal-notifier -execute` evaluates one command string through the system
   shell. Keep every generated argument single-quoted and unit-test paths and
   pane IDs containing spaces, quotes, and shell metacharacters.
-- Keep notification sound out of this plugin; it owns visual delivery only.
+- Keep notification sound out of this plugin's Herdr socket requests
+  (`sound = "none"`); the bundled macOS notifier owns the status sound, and
+  the forwarder recreates it from the payload's status on delivery.
 - Deliver every triggered notification regardless of pane, tab, workspace, or
   frontmost-app focus; focus-based suppression was removed deliberately and
   must not return without an explicit request. The debounce window and the
@@ -222,6 +234,9 @@ request:
 - `herdr-cast-darwin-arm64`
 - `herdr-cast-linux-arm64`
 - `herdr-cast-linux-x64`
+
+An `assets` job also uploads `herdr-cast-assets-darwin` with
+`libexec/HerdrNotify.app`; the Nix package unpacks it next to the binary.
 
 Linux artifacts target musl so NixOS consumers can fetch and run them without
 patching a dynamic loader. Each workflow artifact has a matching `.sha256` file

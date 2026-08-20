@@ -100,3 +100,34 @@ jobs:
           path: |
             ${{ matrix.artifact }}
             ${{ matrix.artifact }}.sha256
+
+  assets:
+    name: Bundle HerdrNotify.app
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Stage artifact
+        run: |
+          set -euo pipefail
+          mkdir -p stage/libexec
+          cp -R assets/HerdrNotify.app stage/libexec/HerdrNotify.app
+          chmod +x stage/libexec/HerdrNotify.app/Contents/MacOS/terminal-notifier
+
+      - name: Compute the nix hash
+        run: |
+          set -euo pipefail
+          NOTIFIER='stage/libexec/HerdrNotify.app/Contents/MacOS/terminal-notifier'
+          HASH="sha256-$(openssl dgst -binary -sha256 "$NOTIFIER" | openssl base64 -A)"
+          echo "$HASH" > stage/herdr-cast-assets-darwin.sha256
+          echo "$HASH"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-cast-assets-darwin
+          path: |
+            stage/libexec
+            stage/herdr-cast-assets-darwin.sha256
