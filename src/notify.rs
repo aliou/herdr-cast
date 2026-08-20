@@ -103,7 +103,7 @@ pub fn forward(arguments: Vec<String>) -> Result<(), String> {
 }
 
 /// Decide the arguments handed to the bundled notifier: rebuilt when the
-/// invocation matches Herdr's exact client grammar (`-title`, `-body`,
+/// invocation matches Herdr's exact client grammar (`-title`, `-message`,
 /// optional `-activate`) and the body decodes as a forwarded payload. Every
 /// other invocation passes through verbatim so unknown flags (today's
 /// `-timeout`, future additions) are never silently dropped.
@@ -147,7 +147,9 @@ fn client_notify_args(arguments: &[String]) -> Option<ClientNotifyArgs<'_>> {
     while index + 1 < arguments.len() {
         let slot = match arguments[index].as_str() {
             "-title" => &mut parsed.title,
-            "-body" => &mut parsed.body,
+            // Herdr's client sends `-message`; the bundled notifier documents
+            // `-body` (which the rewrite emits). Accept both.
+            "-message" | "-body" => &mut parsed.body,
             "-activate" => &mut parsed.activate,
             _ => return None,
         };
@@ -840,7 +842,7 @@ mod tests {
         let arguments = vec![
             "-title".to_string(),
             "pi needs input".to_string(),
-            "-body".to_string(),
+            "-message".to_string(),
             body,
             "-activate".to_string(),
             "com.mitchellh.ghostty".to_string(),
@@ -868,7 +870,7 @@ mod tests {
         let arguments = vec![
             "-title".to_string(),
             "agent done".to_string(),
-            "-body".to_string(),
+            "-message".to_string(),
             r#"{"v":1,"b":"sbx · repo","s":"done"}"#.to_string(),
         ];
 
@@ -889,7 +891,10 @@ mod tests {
 
     #[test]
     fn forward_argv_ignores_sounds_for_unknown_statuses() {
-        let arguments = vec!["-body".to_string(), r#"{"v":1,"s":"working"}"#.to_string()];
+        let arguments = vec![
+            "-message".to_string(),
+            r#"{"v":1,"s":"working"}"#.to_string(),
+        ];
 
         let argv = forward_argv(&arguments);
         assert_eq!(argv, vec!["-title", "herdr", "-body", ""]);
@@ -901,7 +906,7 @@ mod tests {
         let arguments = vec![
             "-title".to_string(),
             "pi needs input".to_string(),
-            "-body".to_string(),
+            "-message".to_string(),
             body,
             "-timeout".to_string(),
             "5".to_string(),
@@ -915,7 +920,7 @@ mod tests {
             let arguments = vec![
                 "-title".to_string(),
                 "herdr".to_string(),
-                "-body".to_string(),
+                "-message".to_string(),
                 body.to_string(),
                 "-activate".to_string(),
                 "com.mitchellh.ghostty".to_string(),
