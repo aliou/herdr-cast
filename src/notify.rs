@@ -248,6 +248,10 @@ pub fn run() -> Result<(), String> {
             sound_name,
         )?;
     } else {
+        // Remote delivery: prefix the origin host so forwarded notifications
+        // say which machine (sandbox VM, remote dev box) is asking. Clicks
+        // only activate the terminal locally, so the title carries context.
+        let title = format!("{title} · {}", origin_host());
         deliver_terminal_notification(client.as_ref(), pane_id, &status, title, body);
     }
 
@@ -358,6 +362,31 @@ fn forwarded_body(pane_id: &str, status: &str, title: &str, body: &str) -> Strin
         "s": status,
     }))
     .unwrap_or_else(|_| body.to_string())
+}
+
+/// Origin hostname for remote-notification titles. Sandbox VMs expose
+/// their sandbox name as the hostname, which is the identifier that names
+/// the session the notification came from; on other hosts this is simply
+/// the machine name. Falls back to `remote` when the hostname cannot be
+/// read so the title never silently loses the origin marker.
+fn origin_host() -> String {
+    let mut buffer = [0u8; 256];
+    let result =
+        unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len()) };
+    if result != 0 {
+        return "remote".to_string();
+    }
+    let end = buffer
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(buffer.len());
+    let host = String::from_utf8_lossy(&buffer[..end]);
+    let host = host.trim();
+    if host.is_empty() {
+        "remote".to_string()
+    } else {
+        host.to_string()
+    }
 }
 
 pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
