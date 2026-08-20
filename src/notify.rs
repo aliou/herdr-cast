@@ -40,8 +40,59 @@ struct NotificationShowParams {
 
 struct Paths {
     state: PathBuf,
-    app: PathBuf,
-    notifier: PathBuf,
+    assets: PathBuf,
+}
+
+/// Which identity bundle renders a notification. macOS draws the left-side
+/// notification icon from the sender bundle's registered icon and offers no
+/// per-notification override, so each status ships as its own bundle with
+/// its own composited icon (`HerdrNotify-blocked.app`, ...). Anything
+/// without a status-specific bundle uses the neutral HerdrNotify.app.
+fn bundle_variant(status: &str) -> Option<&'static str> {
+    match status {
+        "blocked" => Some("blocked"),
+        "done" => Some("done"),
+        _ => None,
+    }
+}
+
+/// The pieces of the shared two-line notification layout. Line 1 (title)
+/// names what the agent works on; line 2 (subtitle) states what happened,
+/// qualified by the workspace label when it adds anything. `host` is set
+/// only for remote (forwarded) notifications.
+struct NotificationParts<'a> {
+    action: &'a str,
+    workspace: &'a str,
+    project: &'a str,
+    host: Option<&'a str>,
+}
+
+/// Render `parts` as (title, subtitle). Title is the project name, falling
+/// back to the workspace label then `herdr`, suffixed with `@host` for
+/// forwarded notifications. Subtitle is the action, extended with
+/// `· workspace` only when the label differs from what the title already
+/// shows. No body line exists: status is carried by the icon and sound.
+fn compose(parts: &NotificationParts) -> (String, Option<String>) {
+    let base = if !parts.project.is_empty() {
+        parts.project
+    } else if !parts.workspace.is_empty() {
+        parts.workspace
+    } else {
+        "herdr"
+    };
+    let title = match parts.host {
+        Some(host) if !host.is_empty() => format!("{base}@{host}"),
+        _ => base.to_string(),
+    };
+    if parts.action.is_empty() {
+        return (title, None);
+    }
+    let mut subtitle = parts.action.to_string();
+    if !parts.workspace.is_empty() && parts.workspace != base {
+        subtitle.push_str(" · ");
+        subtitle.push_str(parts.workspace);
+    }
+    (title, Some(subtitle))
 }
 
 /// The osascript-independent notification flags Herdr's macOS client hands
@@ -55,20 +106,29 @@ struct ClientNotifyArgs<'a> {
 }
 
 /// The compact payload `forwarded_body` hides inside the notification body
-/// so grouping and sound policy survive Herdr's title/body-only protocol.
+/// so layout parts, grouping, and sound policy survive Herdr's
+/// title/body-only protocol. Current senders fill `a`/`w`/`p`/`h`; the
+/// legacy `t`/`b` pair stays supported so older remote senders still
+/// render during a mixed-version transition.
 #[derive(Deserialize)]
 struct ForwardedPayload<'a> {
     v: u32,
     #[serde(default)]
-    t: Option<&'a str>,
+    a: Option<&'a str>,
     #[serde(default)]
-    b: Option<&'a str>,
+    w: Option<&'a str>,
+    #[serde(default)]
+    p: Option<&'a str>,
+    #[serde(default)]
+    h: Option<&'a str>,
     #[serde(default)]
     g: Option<&'a str>,
     #[serde(default)]
     s: Option<&'a str>,
     #[serde(default)]
-    h: Option<&'a str>,
+    t: Option<&'a str>,
+    #[serde(default)]
+    b: Option<&'a str>,
 }
 
 /// Entrypoint for the `terminal-notifier` shim the Nix package installs
@@ -81,27 +141,38 @@ struct ForwardedPayload<'a> {
 /// requires for Notification Center delivery.
 pub fn forward(arguments: Vec<String>) -> Result<(), String> {
     let paths = Paths::from_executable()?;
-    if !paths.notifier.is_file() {
+    let decision = forward_argv(&arguments);
+    let notifier = paths.notifier(decision.variant);
+    if !notifier.is_file() {
         return Err(format!(
-            "bundled HerdrNotify.app executable is missing (expected {})",
-            paths.notifier.display()
+            "bundled notifier executable is missing (expected {})",
+            notifier.display()
         ));
     }
     fs::create_dir_all(&paths.state)
         .map_err(|error| format!("failed to create notifier state directory: {error}"))?;
-    let argv = forward_argv(&arguments);
     // Unlike the plugin notify path, exit non-zero when registration cannot
     // run: this shim is invoked by Herdr's client, which then falls back to
     // its built-in osascript notification instead of showing nothing.
-    if cfg!(target_os = "macos") && !ensure_notifier_registered(&paths) {
+    if cfg!(target_os = "macos") && !ensure_notifier_registered(&paths, decision.variant) {
         return Err("failed to prepare HerdrNotify.app registration".to_string());
     }
     use std::os::unix::process::CommandExt;
-    let error = Command::new(&paths.notifier).args(&argv).exec();
+    let error = Command::new(&notifier).args(&decision.argv).exec();
     Err(format!(
         "failed to exec notifier {}: {error}",
-        paths.notifier.display()
+        notifier.display()
     ))
+}
+
+/// What the shim decided for an invocation: the argv handed to the bundled
+/// notifier plus which identity bundle renders it. The bundle owns the
+/// notification's left icon, so the status carried by a forwarded payload
+/// selects `HerdrNotify-<status>.app`; plain pass-through invocations use
+/// the neutral bundle.
+struct ForwardDecision {
+    argv: Vec<String>,
+    variant: Option<&'static str>,
 }
 
 /// Decide the arguments handed to the bundled notifier: rebuilt when the
@@ -109,7 +180,7 @@ pub fn forward(arguments: Vec<String>) -> Result<(), String> {
 /// optional `-activate`) and the body decodes as a forwarded payload. Every
 /// other invocation passes through verbatim so unknown flags (today's
 /// `-timeout`, future additions) are never silently dropped.
-fn forward_argv(arguments: &[String]) -> Vec<String> {
+fn forward_argv(arguments: &[String]) -> ForwardDecision {
     let parsed = client_notify_args(arguments);
     let payload = parsed
         .as_ref()
@@ -117,8 +188,48 @@ fn forward_argv(arguments: &[String]) -> Vec<String> {
         .and_then(forwarded_payload);
     let (parsed, payload) = match (parsed, payload) {
         (Some(parsed), Some(payload)) => (parsed, payload),
-        _ => return arguments.to_vec(),
+        _ => {
+            return ForwardDecision {
+                argv: arguments.to_vec(),
+                variant: None,
+            }
+        }
     };
+    let variant = payload.s.and_then(bundle_variant);
+
+    // Current payload: recompose the two-line layout from its parts.
+    if payload.a.is_some() || payload.w.is_some() || payload.p.is_some() {
+        let parts = NotificationParts {
+            action: payload.a.unwrap_or(""),
+            workspace: payload.w.unwrap_or(""),
+            project: payload.p.unwrap_or(""),
+            host: payload.h,
+        };
+        let (title, subtitle) = compose(&parts);
+        let mut argv = Vec::with_capacity(12);
+        argv.push("-title".to_string());
+        argv.push(title);
+        if let Some(subtitle) = subtitle {
+            argv.push("-subtitle".to_string());
+            argv.push(subtitle);
+        }
+        if let Some(group) = payload.g {
+            argv.push("-group".to_string());
+            argv.push(group.to_string());
+        }
+        if let Some(sound) = payload.s.and_then(sound_for_status) {
+            argv.push("-sound".to_string());
+            argv.push(sound.to_string());
+        }
+        if let Some(activate) = parsed.activate {
+            argv.push("-activate".to_string());
+            argv.push(activate.to_string());
+        }
+        return ForwardDecision { argv, variant };
+    }
+
+    // Legacy payload (remote herdr-cast before the parts payload): title and
+    // body carried directly, with the origin host as the subtitle.
     let mut argv = Vec::with_capacity(14);
     argv.push("-title".to_string());
     argv.push(payload.t.or(parsed.title).unwrap_or("herdr").to_string());
@@ -140,7 +251,7 @@ fn forward_argv(arguments: &[String]) -> Vec<String> {
         argv.push("-activate".to_string());
         argv.push(activate.to_string());
     }
-    argv
+    ForwardDecision { argv, variant }
 }
 
 /// Parse Herdr's client notifier grammar strictly: every argument must be
@@ -228,33 +339,42 @@ pub fn run() -> Result<(), String> {
         .and_then(|id| workspace_label(client.as_ref(), id))
         .or_else(|| workspace_id.clone())
         .unwrap_or_default();
-    let worktree = cwd
+    let project = cwd
         .as_deref()
         .and_then(|path| Path::new(path).file_name())
         .and_then(|name| name.to_str())
-        .unwrap_or(&workspace);
+        .unwrap_or_default()
+        .to_string();
 
     if is_debounced(&paths.state, pane_id, &status)? {
         return Ok(());
     }
-    let (title, sound_name) = match status.as_str() {
-        "blocked" => (format!("⏳ {agent} needs input"), BLOCKED_SOUND),
-        "done" => (format!("✅ {agent} done"), DONE_SOUND),
+    // The title/subtitle carry no status glyphs: the per-status bundle icon
+    // and sound are the status signal.
+    let action = match status.as_str() {
+        "blocked" => format!("{agent} needs input"),
+        "done" => format!("{agent} done"),
         _ => return Ok(()),
     };
-    let body = format!("{workspace} · {worktree}");
+    let parts = NotificationParts {
+        action: &action,
+        workspace: &workspace,
+        project: &project,
+        host: None,
+    };
 
     if cfg!(target_os = "macos") {
+        let (title, subtitle) = compose(&parts);
         deliver_macos_notification(
             &paths,
             socket_path.as_deref(),
             pane_id,
+            &status,
             title,
-            body,
-            sound_name,
+            subtitle,
         )?;
     } else {
-        deliver_terminal_notification(client.as_ref(), pane_id, &status, title, body);
+        deliver_terminal_notification(client.as_ref(), pane_id, &status, &parts);
     }
 
     Ok(())
@@ -264,27 +384,33 @@ fn deliver_macos_notification(
     paths: &Paths,
     socket_path: Option<&str>,
     pane_id: &str,
+    status: &str,
     title: String,
-    body: String,
-    sound_name: &str,
+    subtitle: Option<String>,
 ) -> Result<(), String> {
-    if !paths.notifier.is_file() {
-        log("bundled HerdrNotify.app executable is missing");
+    let variant = bundle_variant(status);
+    let notifier = paths.notifier(variant);
+    if !notifier.is_file() {
+        log(&format!(
+            "bundled notifier executable is missing (expected {})",
+            notifier.display()
+        ));
         return Ok(());
     }
-    if !ensure_notifier_registered(paths) {
+    if !ensure_notifier_registered(paths, variant) {
         return Ok(());
     }
-    let mut args = vec![
-        "-title".to_string(),
-        title,
-        "-message".to_string(),
-        body,
-        "-group".to_string(),
-        pane_id.to_string(),
-        "-sound".to_string(),
-        sound_name.to_string(),
-    ];
+    let mut args = vec!["-title".to_string(), title];
+    if let Some(subtitle) = subtitle {
+        args.push("-subtitle".to_string());
+        args.push(subtitle);
+    }
+    args.push("-group".to_string());
+    args.push(pane_id.to_string());
+    if let Some(sound) = sound_for_status(status) {
+        args.push("-sound".to_string());
+        args.push(sound.to_string());
+    }
     if let Some(socket_path) = socket_path {
         let current_exe = std::env::current_exe()
             .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
@@ -292,7 +418,7 @@ fn deliver_macos_notification(
         args.push(click_command(&current_exe, &socket_path, pane_id));
     }
 
-    match Command::new(&paths.notifier).args(&args).output() {
+    match Command::new(&notifier).args(&args).output() {
         Ok(output) if output.status.success() => {}
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
@@ -312,20 +438,22 @@ fn deliver_terminal_notification(
     client: Option<&SocketClient>,
     pane_id: &str,
     status: &str,
-    title: String,
-    body: String,
+    parts: &NotificationParts,
 ) {
     let Some(client) = client else {
         log("HERDR_SOCKET_PATH is not set; cannot request terminal notification");
         return;
     };
 
+    // The socket-level title reads sensibly for a client that does not
+    // run the forwarder; the macOS forwarder rebuilds its own title and
+    // subtitle from the payload parts and ignores this string.
     let response = client.send(
         "cast:notification-show",
         "notification.show",
         NotificationShowParams {
-            body: Some(forwarded_body(pane_id, status, &title, &body)),
-            title,
+            body: Some(forwarded_body(pane_id, status, parts)),
+            title: parts.action.to_string(),
             position: None,
             sound: "none",
         },
@@ -349,22 +477,28 @@ fn deliver_terminal_notification(
 }
 
 /// Encode the remote-delivery payload consumed by the local HerdrNotify
-/// forwarder. Herdr's client protocol carries only title and body strings, so
-/// the forwarder's grouping key, sound policy, and display title ride inside
-/// a compact JSON body. Keep the socket title human-readable and the fields
-/// short enough that the server's 240-character body cap cannot truncate the
-/// JSON: a client without the forwarder still shows a meaningful plain
-/// notification instead of a sliced payload.
-fn forwarded_body(pane_id: &str, status: &str, title: &str, body: &str) -> String {
-    serde_json::to_string(&json!({
+/// forwarder. Herdr's client protocol carries only title and body strings,
+/// so the layout parts, grouping key, and sound policy ride inside a
+/// compact JSON body. Field caps keep the worst case under the server's
+/// 240-character body cap (checked by tests) so the JSON cannot be sliced:
+/// a client without the forwarder would otherwise show a truncated payload.
+fn forwarded_body(pane_id: &str, status: &str, parts: &NotificationParts) -> String {
+    let body = serde_json::to_string(&json!({
         "v": 1,
-        "t": truncate(title, 48),
-        "b": truncate(body, 72),
+        "a": truncate(parts.action, 40),
+        "w": truncate(parts.workspace, 40),
+        "p": truncate(parts.project, 40),
+        "h": truncate(&origin_host(), 32),
         "g": truncate(pane_id, 24),
         "s": status,
-        "h": truncate(&origin_host(), 32),
     }))
-    .unwrap_or_else(|_| body.to_string())
+    .unwrap_or_else(|_| parts.action.to_string());
+    // Defensive: with the caps above this never triggers, but a sliced
+    // payload is much worse than a plain one.
+    if body.chars().count() > 240 {
+        return parts.action.to_string();
+    }
+    body
 }
 
 /// Origin hostname for the payload's subtitle marker. Sandbox VMs expose
@@ -551,13 +685,22 @@ impl Paths {
             .or_else(|| std::env::current_dir().ok())
             .ok_or_else(|| "plugin root is unavailable".to_string())?;
         let state = Self::state_dir();
-        let app = root.join("assets/HerdrNotify.app");
-        let notifier = app.join("Contents/MacOS/terminal-notifier");
-        Ok(Self {
-            state,
-            app,
-            notifier,
-        })
+        let assets = root.join("assets");
+        Ok(Self { state, assets })
+    }
+
+    /// The app bundle rendering notifications for a given status variant
+    /// (`None` = the neutral bundle for pass-through and Herdr's own
+    /// toasts).
+    fn app(&self, variant: Option<&str>) -> PathBuf {
+        match variant {
+            None => self.assets.join("HerdrNotify.app"),
+            Some(variant) => self.assets.join(format!("HerdrNotify-{variant}.app")),
+        }
+    }
+
+    fn notifier(&self, variant: Option<&str>) -> PathBuf {
+        self.app(variant).join("Contents/MacOS/terminal-notifier")
     }
 
     /// Resolve the bundled app for `forward-notify`, which runs in client
@@ -575,12 +718,10 @@ impl Paths {
             .parent()
             .and_then(Path::parent)
             .ok_or_else(|| format!("unexpected executable location: {}", exe.display()))?;
-        let app = prefix.join("libexec/HerdrNotify.app");
-        let notifier = app.join("Contents/MacOS/terminal-notifier");
+        let assets = prefix.join("libexec");
         Ok(Self {
             state: Self::state_dir(),
-            app,
-            notifier,
+            assets,
         })
     }
 
@@ -693,7 +834,7 @@ fn hex_key(value: &str) -> String {
     encoded
 }
 
-fn ensure_notifier_registered(paths: &Paths) -> bool {
+fn ensure_notifier_registered(paths: &Paths, variant: Option<&str>) -> bool {
     let lock_path = paths.state.join(".notifier-registration.lock");
     let _lock = match DirectoryLock::acquire(lock_path, Duration::from_secs(120), 500) {
         Ok(Some(lock)) => lock,
@@ -706,31 +847,40 @@ fn ensure_notifier_registered(paths: &Paths) -> bool {
             return false;
         }
     };
-    let sentinel = paths.state.join(".notifier-registered");
-    if !registration_expired(&sentinel, &paths.notifier) {
+    let sentinel = match variant {
+        None => paths.state.join(".notifier-registered"),
+        Some(variant) => paths.state.join(format!(".notifier-registered-{variant}")),
+    };
+    let notifier = paths.notifier(variant);
+    if !registration_expired(&sentinel, &notifier) {
         return true;
     }
 
+    let app = paths.app(variant);
+    let name = app
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("HerdrNotify.app");
     if !quiet_status(
         Command::new("codesign")
             .args(["--verify", "--deep"])
-            .arg(&paths.app),
+            .arg(&app),
     ) && !quiet_status(
         Command::new("codesign")
             .args(["--force", "--deep", "-s", "-"])
-            .arg(&paths.app),
+            .arg(&app),
     ) {
-        log("failed to ad-hoc sign HerdrNotify.app");
+        log(&format!("failed to ad-hoc sign {name}"));
     }
 
-    if quiet_status(Command::new(LSREGISTER).arg("-f").arg(&paths.app)) {
+    if quiet_status(Command::new(LSREGISTER).arg("-f").arg(&app)) {
         if let Err(error) = fs::write(&sentinel, unix_seconds().to_string()) {
             log(&format!(
                 "failed to update notifier registration state: {error}"
             ));
         }
     } else {
-        log("failed to register HerdrNotify.app with Launch Services");
+        log(&format!("failed to register {name} with Launch Services"));
     }
     true
 }
@@ -848,12 +998,88 @@ mod tests {
     }
 
     #[test]
+    fn variants_map_trigger_statuses_to_identity_bundles() {
+        assert_eq!(bundle_variant("blocked"), Some("blocked"));
+        assert_eq!(bundle_variant("done"), Some("done"));
+        assert_eq!(bundle_variant("working"), None);
+    }
+
+    #[test]
+    fn compose_local_title_dedupes_workspace_and_project() {
+        let (title, subtitle) = compose(&NotificationParts {
+            action: "pi needs input",
+            workspace: "herdr-cast",
+            project: "herdr-cast",
+            host: None,
+        });
+        assert_eq!(title, "herdr-cast");
+        assert_eq!(subtitle, Some("pi needs input".to_string()));
+    }
+
+    #[test]
+    fn compose_subtitle_keeps_a_differing_workspace_label() {
+        let (title, subtitle) = compose(&NotificationParts {
+            action: "pi done",
+            workspace: "frank",
+            project: "x",
+            host: None,
+        });
+        assert_eq!(title, "x");
+        assert_eq!(subtitle, Some("pi done · frank".to_string()));
+    }
+
+    #[test]
+    fn compose_remote_title_carries_the_origin_host() {
+        let (title, subtitle) = compose(&NotificationParts {
+            action: "pi needs input",
+            workspace: "herdr-cast",
+            project: "herdr-cast",
+            host: Some("cast-notify-fwd-0492f3"),
+        });
+        assert_eq!(title, "herdr-cast@cast-notify-fwd-0492f3");
+        assert_eq!(subtitle, Some("pi needs input".to_string()));
+    }
+
+    #[test]
+    fn compose_falls_back_to_workspace_then_herdr_for_the_title() {
+        let parts = NotificationParts {
+            action: "pi done",
+            workspace: "frank",
+            project: "",
+            host: Some("donut"),
+        };
+        // Project unknown: the workspace label names the title instead, so
+        // it must not repeat in the subtitle.
+        assert_eq!(
+            compose(&parts),
+            ("frank@donut".to_string(), Some("pi done".to_string()))
+        );
+        let empty = NotificationParts {
+            action: "pi done",
+            workspace: "",
+            project: "",
+            host: None,
+        };
+        assert_eq!(compose(&empty).0, "herdr");
+    }
+
+    #[test]
     fn forwarded_body_encodes_forwarder_payload() {
-        let body = forwarded_body("pane-1", "blocked", "pi needs input", "sbx · repo");
+        let body = forwarded_body(
+            "pane-1",
+            "blocked",
+            &NotificationParts {
+                action: "pi needs input",
+                workspace: "herdr-cast",
+                project: "herdr-cast",
+                host: None,
+            },
+        );
         let value: Value = serde_json::from_str(&body).unwrap();
         assert_eq!(value["v"], 1);
-        assert_eq!(value["t"], "pi needs input");
-        assert_eq!(value["b"], "sbx · repo");
+        assert_eq!(value["a"], "pi needs input");
+        assert_eq!(value["w"], "herdr-cast");
+        assert_eq!(value["p"], "herdr-cast");
         assert_eq!(value["g"], "pane-1");
         assert_eq!(value["s"], "blocked");
         assert!(value["h"].as_str().is_some_and(|host| !host.is_empty()));
@@ -861,16 +1087,80 @@ mod tests {
 
     #[test]
     fn forwarded_body_fits_the_server_body_cap() {
-        let body = forwarded_body(&"p".repeat(40), "done", &"t".repeat(200), &"b".repeat(200));
-        assert!(body.chars().count() <= 240);
+        let body = forwarded_body(
+            &"p".repeat(64),
+            "blocked",
+            &NotificationParts {
+                action: &"a".repeat(200),
+                workspace: &"w".repeat(200),
+                project: &"p".repeat(200),
+                host: None,
+            },
+        );
         let value: Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(value["t"], "t".repeat(48));
-        assert_eq!(value["b"], "b".repeat(72));
+        assert_eq!(value["a"], "a".repeat(40));
+        assert_eq!(value["w"], "w".repeat(40));
+        assert_eq!(value["p"], "p".repeat(40));
         assert_eq!(value["g"], "p".repeat(24));
+        // The only un-capped field is the machine hostname; even the
+        // synthetic maximum-length variant must stay under the server cap.
+        assert!(body.chars().count() <= 240, "payload too long: {body}");
     }
 
     #[test]
     fn forward_argv_rewrites_a_forwarded_payload() {
+        let body = r#"{"v":1,"a":"pi needs input","w":"herdr-cast","p":"herdr-cast","h":"cast-notify-fwd-0492f3","g":"w1:p1","s":"blocked"}"#.to_string();
+        let arguments = vec![
+            "-title".to_string(),
+            "pi needs input".to_string(),
+            "-message".to_string(),
+            body,
+            "-activate".to_string(),
+            "com.mitchellh.ghostty".to_string(),
+        ];
+
+        let decision = forward_argv(&arguments);
+        assert_eq!(
+            decision.argv,
+            vec![
+                "-title",
+                "herdr-cast@cast-notify-fwd-0492f3",
+                "-subtitle",
+                "pi needs input",
+                "-group",
+                "w1:p1",
+                "-sound",
+                "Glass",
+                "-activate",
+                "com.mitchellh.ghostty",
+            ]
+        );
+        assert_eq!(decision.variant, Some("blocked"));
+    }
+
+    #[test]
+    fn forward_argv_keeps_a_differing_workspace_in_the_subtitle() {
+        let body =
+            r#"{"v":1,"a":"pi done","w":"frank","p":"x","h":"donut","s":"done"}"#.to_string();
+        let arguments = vec!["-message".to_string(), body];
+
+        let decision = forward_argv(&arguments);
+        assert_eq!(
+            decision.argv,
+            vec![
+                "-title",
+                "x@donut",
+                "-subtitle",
+                "pi done · frank",
+                "-sound",
+                "Funk",
+            ]
+        );
+        assert_eq!(decision.variant, Some("done"));
+    }
+
+    #[test]
+    fn forward_argv_supports_legacy_title_body_payloads() {
         let body = r#"{"v":1,"t":"pi needs input","b":"sbx · repo","g":"w1:p1","s":"blocked","h":"donut"}"#.to_string();
         let arguments = vec![
             "-title".to_string(),
@@ -881,8 +1171,9 @@ mod tests {
             "com.mitchellh.ghostty".to_string(),
         ];
 
+        let decision = forward_argv(&arguments);
         assert_eq!(
-            forward_argv(&arguments),
+            decision.argv,
             vec![
                 "-title",
                 "pi needs input",
@@ -898,46 +1189,36 @@ mod tests {
                 "com.mitchellh.ghostty",
             ]
         );
-    }
-
-    #[test]
-    fn forward_argv_falls_back_to_the_client_title() {
-        let arguments = vec![
-            "-title".to_string(),
-            "agent done".to_string(),
-            "-message".to_string(),
-            r#"{"v":1,"b":"sbx · repo","s":"done"}"#.to_string(),
-        ];
-
-        let argv = forward_argv(&arguments);
-        assert_eq!(
-            argv,
-            vec![
-                "-title",
-                "agent done",
-                "-body",
-                "sbx · repo",
-                "-sound",
-                "Funk",
-            ]
-        );
-        assert!(!argv.windows(2).any(|pair| pair == ["-title", "herdr"]));
+        assert_eq!(decision.variant, Some("blocked"));
     }
 
     #[test]
     fn forward_argv_ignores_sounds_for_unknown_statuses() {
         let arguments = vec![
             "-message".to_string(),
-            r#"{"v":1,"s":"working"}"#.to_string(),
+            r#"{"v":1,"a":"still going","s":"working"}"#.to_string(),
         ];
 
-        let argv = forward_argv(&arguments);
-        assert_eq!(argv, vec!["-title", "herdr", "-body", ""]);
+        let decision = forward_argv(&arguments);
+        assert_eq!(
+            decision.argv,
+            vec!["-title", "herdr", "-subtitle", "still going"]
+        );
+        assert_eq!(decision.variant, None);
     }
 
     #[test]
     fn forward_argv_passes_payloads_with_unknown_flags_through_verbatim() {
-        let body = forwarded_body("w1:p1", "blocked", "pi needs input", "sbx · repo");
+        let body = forwarded_body(
+            "w1:p1",
+            "blocked",
+            &NotificationParts {
+                action: "pi needs input",
+                workspace: "herdr-cast",
+                project: "herdr-cast",
+                host: None,
+            },
+        );
         let arguments = vec![
             "-title".to_string(),
             "pi needs input".to_string(),
@@ -946,7 +1227,9 @@ mod tests {
             "-timeout".to_string(),
             "5".to_string(),
         ];
-        assert_eq!(forward_argv(&arguments), arguments);
+        let decision = forward_argv(&arguments);
+        assert_eq!(decision.argv, arguments);
+        assert_eq!(decision.variant, None);
     }
 
     #[test]
@@ -962,7 +1245,9 @@ mod tests {
                 "-timeout".to_string(),
                 "5".to_string(),
             ];
-            assert_eq!(forward_argv(&arguments), arguments);
+            let decision = forward_argv(&arguments);
+            assert_eq!(decision.argv, arguments);
+            assert_eq!(decision.variant, None);
         }
     }
 }

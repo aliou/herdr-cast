@@ -38,13 +38,24 @@ Flip a two-pane split, then move a pane into a new workspace.
 ### Agent notifications
 
 - Posts notifications for Herdr's `blocked` and `done` agent statuses.
-- On macOS, uses the bundled, rebranded `HerdrNotify.app`.
+- On macOS, delivers through the bundled `HerdrNotify*.app` identity
+  bundles: `blocked` through `HerdrNotify-blocked.app` (orange dot icon),
+  `done` through `HerdrNotify-done.app` (green dot icon), everything else
+  through the neutral `HerdrNotify.app`. Per-status bundles exist because
+  macOS draws a notification's icon from the sender bundle's registered
+  icon; each variant is a distinct Notification Center identity with its
+  own one-time permission grant and System Settings entry.
+- Notification layout is two lines: the title names the project the agent
+  works in (`PROJECT` locally, `PROJECT@HOST` when forwarded from a remote
+  machine), the subtitle states the action (`<agent> needs input`,
+  `<agent> done`) followed by `· <workspace>` only when the workspace label
+  differs from the project. There is no body line; status is carried by
+  the icon color and sound.
 - On Linux, asks Herdr to show the notification through the attached terminal
-  client with sound disabled. The request body carries a compact payload with
-  the display title, body, grouping key, and status; when the client runs on
+  client with sound disabled. The request body carries a compact payload
+  with the layout parts, grouping key, and status; when the client runs on
   macOS, `herdr-cast forward-notify` decodes it and renders a native
-  notification with the right grouping and sound (see below).
-- Includes the agent, workspace, and working-directory context.
+  notification with the right bundle, grouping, and sound (see below).
 - Groups notifications by pane and debounces duplicate pane/status events for
   two seconds.
 - Delivers every triggered notification regardless of pane, tab, workspace, or
@@ -65,12 +76,13 @@ Herdr's macOS client renders `SystemToast` notifications by running whatever
 `terminal-notifier` it finds on `PATH`. Cast's Nix package installs a shim
 binary under that name next to `herdr-cast`, which execs
 `herdr-cast forward-notify`: forwarded payloads (from Cast running on a remote
-Linux host) are rebuilt as native HerdrNotify.app notifications with pane
-grouping and the status sound; every other invocation passes through to the
-bundled notifier verbatim, so Herdr's own local toasts keep working. The
-package bundles `assets/HerdrNotify.app` at `libexec/HerdrNotify.app`, and
-`forward-notify` finds it relative to the resolved herdr-cast executable, so
-no configuration is needed on any machine that has the package on `PATH`.
+Linux host) are rebuilt as native notifications through the status's
+HerdrNotify bundle with pane grouping and the status sound; every other
+invocation passes through to the neutral bundle verbatim, so Herdr's own
+local toasts keep working. The package unpacks the `HerdrNotify*.app`
+bundles into `libexec/`, and `forward-notify` finds them relative to the
+resolved herdr-cast executable, so no configuration is needed on any machine
+that has the package on `PATH`.
 
 ### Workspace and agent picker
 
@@ -369,17 +381,22 @@ Herdr's API.
   `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
-- `src/notify.rs` owns notification policy, state, macOS focus detection,
-  macOS notifier registration and delivery, Linux terminal notification
-  requests, macOS click-to-focus behavior, and the `forward-notify` receiver
-  that decodes forwarded payloads for the `terminal-notifier` shim.
+- `src/notify.rs` owns notification policy, state, the shared two-line
+  layout assembly, macOS notifier registration (per bundle variant) and
+  delivery, Linux terminal notification requests, macOS click-to-focus
+  behavior, and the `forward-notify` receiver that decodes forwarded
+  payloads for the `terminal-notifier` shim.
 - `src/picker.rs` provides the reusable fuzzy picker and rendering.
 - `src/palette.rs` implements layout actions.
 - `src/workspace.rs` implements workspace creation and workspace/pane focus.
 - `src/space.rs` reports Space sidebar metadata and prints the zsh
   integration.
 - `src/zoxide.rs` builds and orders directory candidates.
-- `assets/HerdrNotify.app` is the bundled macOS notification application.
+- `assets/HerdrNotify.app` is the neutral bundled macOS notification
+  application; `assets/HerdrNotify-blocked.app` and
+  `assets/HerdrNotify-done.app` are the per-status identities (same binary,
+  own bundle ids and composited icons), generated from the base by
+  `scripts/gen-notify-bundles.py` and committed.
 
 `herdr-plugin.toml` defines the startup hook, event subscriptions, pane
 entrypoints, popup sizes, and build command. Runtime artifacts live only in
@@ -411,9 +428,10 @@ GitHub Actions builds binaries on every push and pull request for:
 
 Linux binaries target musl so they run on NixOS without a dynamic loader
 patch. On pushes to main, the build jobs and a separate `assets` job upload
-the binaries and `herdr-cast-assets-darwin.tar.gz` (the bundled
-`HerdrNotify.app`) to the rolling `unstable` prerelease, which the Nix
-package fetches through the official `releases/download/unstable/...` URLs.
+the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
+`HerdrNotify*.app` identities) to the rolling `unstable` prerelease, which
+the Nix package fetches through the official
+`releases/download/unstable/...` URLs.
 
 ## License
 

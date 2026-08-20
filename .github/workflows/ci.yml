@@ -105,20 +105,21 @@ jobs:
           gh release upload unstable "${{ matrix.artifact }}" --clobber
 
   assets:
-    name: Bundle HerdrNotify.app
+    name: Bundle HerdrNotify apps
     runs-on: macos-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Package the bundled notifier app
+      - name: Package the bundled notifier apps
         run: |
           set -euo pipefail
           mkdir -p stage/libexec
-          cp -R assets/HerdrNotify.app stage/libexec/HerdrNotify.app
-          chmod +x stage/libexec/HerdrNotify.app/Contents/MacOS/terminal-notifier
-          tar -czf stage/herdr-cast-assets-darwin.tar.gz -C stage/libexec HerdrNotify.app
+          cp -R assets/HerdrNotify.app assets/HerdrNotify-blocked.app assets/HerdrNotify-done.app stage/libexec/
+          chmod +x stage/libexec/*/Contents/MacOS/terminal-notifier
+          tar -czf stage/herdr-cast-assets-darwin.tar.gz -C stage/libexec \
+            HerdrNotify.app HerdrNotify-blocked.app HerdrNotify-done.app
 
       - name: Upload to the unstable release
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'

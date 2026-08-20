@@ -78,15 +78,16 @@ request/response contract.
   `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
-  state, Herdr enrichment, macOS notifier registration and delivery, Linux
-  terminal notification requests, macOS click-to-focus, and the
-  `forward-notify` receiver: the Nix package installs a `terminal-notifier`
-  shim that execs this command so Herdr's macOS client renders forwarded
-  remote payloads (grouping, sound, title/body from the v1 JSON body)
-  through HerdrNotify.app while passing every other notification through
-  verbatim. It resolves the app from `libexec/HerdrNotify.app` relative to
-  the canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it
-  runs in client context.
+  state, Herdr enrichment, the shared two-line layout assembly (`compose`),
+  macOS notifier registration and delivery, Linux terminal notification
+  requests, macOS click-to-focus, and the `forward-notify` receiver: the Nix
+  package installs a `terminal-notifier` shim that execs this command so
+  Herdr's macOS client renders forwarded remote payloads (layout parts,
+  grouping, status from the v1 JSON body) through the status's HerdrNotify
+  bundle while passing every other notification through the neutral bundle
+  verbatim. It resolves the bundles from `libexec/` relative to the
+  canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it runs
+  in client context.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a split or move the focused pane to a new workspace.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
@@ -108,10 +109,19 @@ request/response contract.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order.
-- `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve its
-  license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code finds
-  it under `assets/`; the Nix package also installs it at
-  `libexec/HerdrNotify.app` for the client-context `forward-notify` shim.
+- `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve
+  its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
+  finds it under `assets/`; the Nix package also installs the whole
+  `HerdrNotify*.app` set under `libexec/` for the client-context
+  `forward-notify` shim.
+- `assets/HerdrNotify-blocked.app` and `assets/HerdrNotify-done.app`:
+  per-status notification identities, generated from the base bundle by
+  `scripts/gen-notify-bundles.py` (composited status-dot icon, own bundle
+  id, ad-hoc signed) and committed. macOS draws a notification's icon from
+  the sender bundle's registered icon and offers no per-notification
+  override, so these bundles are how a notification carries its status
+  visually. Each variant is registered and signed lazily with its own
+  sentinel, and triggers a one-time macOS permission grant.
 
 Herdr runs plugin commands with the plugin root as cwd and injects runtime
 variables including `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`,
@@ -171,6 +181,16 @@ runtime invocation.
 - Keep notification sound out of this plugin's Herdr socket requests
   (`sound = "none"`); the bundled macOS notifier owns the status sound, and
   the forwarder recreates it from the payload's status on delivery.
+- Keep notification text glyph-free. Both local delivery and the forwarder
+  must render through `notify::compose`: the title names the project
+  (`PROJECT@HOST` when forwarded), the subtitle is the action plus
+  `· workspace` only when the label differs from the project, and there is
+  no body line. Status is visual (per-status bundle icon) and audible
+  (Glass/Funk), never an emoji.
+- The forwarded payload caps its fields so the encoded JSON always fits
+  Herdr's 240-character body cap; never let the server truncate it.
+  Keep accepting legacy `t`/`b` payloads until every remote sender in use
+  runs a build with the `a`/`w`/`p`/`h` parts payload.
 - Deliver every triggered notification regardless of pane, tab, workspace, or
   frontmost-app focus; focus-based suppression was removed deliberately and
   must not return without an explicit request. The debounce window and the
@@ -237,8 +257,8 @@ request:
 
 Linux binaries target musl so NixOS consumers can run them without patching a
 dynamic loader. On pushes to main, the build jobs and the `assets` job also
-upload the binaries and `herdr-cast-assets-darwin.tar.gz` (the bundled
-`HerdrNotify.app`) to the rolling `unstable` prerelease. The Nix package at
+upload the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
+`HerdrNotify*.app` identities) to the rolling `unstable` prerelease. The Nix package at
 `pkgs/pkgs/herdr-cast` in the homelab repo fetches everything through the
 official `releases/download/unstable/...` URLs, like the other package
 definitions.
