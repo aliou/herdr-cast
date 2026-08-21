@@ -35,14 +35,6 @@
 			<key>optional</key>
 			<true/>
 		</dict>
-		<key>Resources/icon-blocked.png</key>
-		<data>
-		RKVXiE39MMLN9Ln+iAPD1VlnOw4=
-		</data>
-		<key>Resources/icon-done.png</key>
-		<data>
-		PY+kAOfE6GV9BZ39ar5AltHz0hM=
-		</data>
 	</dict>
 	<key>files2</key>
 	<dict>
@@ -79,20 +71,6 @@
 			</data>
 			<key>optional</key>
 			<true/>
-		</dict>
-		<key>Resources/icon-blocked.png</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			7BGJHcJDp/wueqF3l+sDHwDueQ/k0Jwc+6sPZ+fr2Js=
-			</data>
-		</dict>
-		<key>Resources/icon-done.png</key>
-		<dict>
-			<key>hash2</key>
-			<data>
-			mr/Prbk8xvfu+Ov4df9zxSt0Sd8g0DxJJChu11pXVto=
-			</data>
 		</dict>
 	</dict>
 	<key>rules</key>
