@@ -58,6 +58,12 @@ Flip a two-pane split, then move a pane into a new workspace.
   notification with the right bundle, grouping, and sound (see below).
 - Groups notifications by pane and debounces duplicate pane/status events for
   two seconds.
+- Clears a pane's delivered local macOS notification when Herdr emits
+  `pane.focused` for that pane. Cast records outstanding notifications in the
+  injected plugin state directory and removes the pane group from each status
+  bundle that delivered one. Local group ids include the Herdr session, so one
+  session cannot clear another's notification. Closing a pane clears the same
+  state because its notification is no longer actionable.
 - Delivers every triggered notification regardless of pane, tab, workspace, or
   frontmost-app focus; nothing is suppressed for being on screen.
 - Plays a status sound on macOS (`Glass` for blocked, `Funk` for done).
@@ -376,16 +382,17 @@ Herdr's API.
 
 ## Architecture
 
-- `src/main.rs` dispatches the `notify`, `forward-notify`, `focus`,
+- `src/main.rs` dispatches the `notify`, `clear-notification`,
+  `forward-notify`, `focus`,
   `palette`, `directory-workspace`, `workspace-picker`, `sync-space`,
   `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, the shared two-line
   layout assembly, macOS notifier registration (per bundle variant) and
-  delivery, Linux terminal notification requests, macOS click-to-focus
-  behavior, and the `forward-notify` receiver that decodes forwarded
-  payloads for the `terminal-notifier` shim.
+  delivery and removal, Linux terminal notification requests, macOS
+  click-to-focus behavior, and the `forward-notify` receiver that decodes
+  forwarded payloads for the `terminal-notifier` shim.
 - `src/picker.rs` provides the reusable fuzzy picker and rendering.
 - `src/palette.rs` implements layout actions.
 - `src/workspace.rs` implements workspace creation and workspace/pane focus.

@@ -14,6 +14,7 @@ const DONE_SOUND: &str = "Funk";
 const ACTIVATE_APP: &str = "Ghostty";
 const DEBOUNCE_SECONDS: u64 = 2;
 const REGISTER_TTL_SECONDS: u64 = 6 * 60 * 60;
+const OUTSTANDING_NOTIFICATION_PREFIX: &str = "outstanding-notification";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
 #[derive(Debug, Default, Deserialize)]
@@ -400,13 +401,17 @@ fn deliver_macos_notification(
     if !ensure_notifier_registered(paths, variant) {
         return Ok(());
     }
+    let group = local_notification_group(socket_path, pane_id);
+    let Some(_lifecycle_lock) = notification_lifecycle_lock(&paths.state, &group, status) else {
+        return Ok(());
+    };
     let mut args = vec!["-title".to_string(), title];
     if let Some(subtitle) = subtitle {
         args.push("-subtitle".to_string());
         args.push(subtitle);
     }
     args.push("-group".to_string());
-    args.push(pane_id.to_string());
+    args.push(group.clone());
     if let Some(sound) = sound_for_status(status) {
         args.push("-sound".to_string());
         args.push(sound.to_string());
@@ -419,7 +424,9 @@ fn deliver_macos_notification(
     }
 
     match Command::new(&notifier).args(&args).output() {
-        Ok(output) if output.status.success() => {}
+        Ok(output) if output.status.success() => {
+            mark_notification_outstanding(&paths.state, &group, status);
+        }
         Ok(output) => {
             let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
             log(&format!(
@@ -432,6 +439,138 @@ fn deliver_macos_notification(
     }
 
     Ok(())
+}
+
+/// Remove local macOS notifications previously delivered for `pane_id`.
+/// Delivery uses one bundle identity per triggering status, so each
+/// outstanding bundle must remove its own pane group.
+pub fn clear_delivered_for_pane(pane_id: &str) {
+    if !cfg!(target_os = "macos") {
+        return;
+    }
+    let paths = match Paths::from_environment() {
+        Ok(paths) => paths,
+        Err(error) => {
+            log(&format!(
+                "cannot locate notifier while clearing pane {pane_id}: {error}"
+            ));
+            return;
+        }
+    };
+    let socket_path = std::env::var("HERDR_SOCKET_PATH").ok();
+    let group = local_notification_group(socket_path.as_deref(), pane_id);
+    clear_delivered_with_paths(&paths, &group);
+}
+
+/// Hook entrypoint for lifecycle events such as `pane.closed` that should
+/// discard a pane's no-longer-actionable notification.
+pub fn clear_from_event() -> Result<(), String> {
+    let event: EventEnvelope = environment_json("HERDR_PLUGIN_EVENT_JSON");
+    let Some(pane_id) = event.data.pane_id.as_deref() else {
+        log("dropped notification-clear event without data.pane_id");
+        return Ok(());
+    };
+    clear_delivered_for_pane(pane_id);
+    Ok(())
+}
+
+fn clear_delivered_with_paths(paths: &Paths, group: &str) {
+    for status in TRIGGER_STATUSES {
+        let Some(_lifecycle_lock) = notification_lifecycle_lock(&paths.state, group, status) else {
+            continue;
+        };
+        let marker = outstanding_notification_path(&paths.state, group, status);
+        if !marker.is_file() {
+            continue;
+        }
+
+        let notifier = paths.notifier(bundle_variant(status));
+        if !notifier.is_file() {
+            log(&format!(
+                "cannot clear {status} notification; notifier is missing (expected {})",
+                notifier.display()
+            ));
+            continue;
+        }
+
+        match Command::new(&notifier).args(["-remove", group]).output() {
+            Ok(output) if output.status.success() => {
+                if let Err(error) = fs::remove_file(&marker) {
+                    log(&format!(
+                        "cleared {status} notification but failed to remove its state marker: {error}"
+                    ));
+                }
+            }
+            Ok(output) => {
+                let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
+                log(&format!(
+                    "failed to clear {status} notification with {}: {}",
+                    output.status,
+                    truncate(&stderr, 500)
+                ));
+            }
+            Err(error) => log(&format!(
+                "failed to start notifier while clearing {status} notification: {error}"
+            )),
+        }
+    }
+}
+
+fn local_notification_group(socket_path: Option<&str>, pane_id: &str) -> String {
+    let session = socket_path
+        .map(str::to_owned)
+        .or_else(|| std::env::var("HERDR_SESSION").ok())
+        .unwrap_or_else(|| "default".to_string());
+    format!("cast-local-{:016x}-{pane_id}", stable_hash(&session))
+}
+
+fn mark_notification_outstanding(state_dir: &Path, group: &str, status: &str) {
+    let marker = outstanding_notification_path(state_dir, group, status);
+    if let Err(error) = fs::write(&marker, []) {
+        log(&format!(
+            "notification was delivered but its clear state could not be saved: {error}"
+        ));
+    }
+}
+
+fn outstanding_notification_path(state_dir: &Path, group: &str, status: &str) -> PathBuf {
+    state_dir.join(format!(
+        "{OUTSTANDING_NOTIFICATION_PREFIX}-{:016x}-{}",
+        stable_hash(group),
+        hex_key(status)
+    ))
+}
+
+fn notification_lifecycle_lock(
+    state_dir: &Path,
+    group: &str,
+    status: &str,
+) -> Option<DirectoryLock> {
+    let path = state_dir.join(format!(
+        ".notification-lifecycle-{:016x}-{}.lock",
+        stable_hash(group),
+        hex_key(status)
+    ));
+    match DirectoryLock::acquire(path, Duration::from_secs(30), 500) {
+        Ok(Some(lock)) => Some(lock),
+        Ok(None) => {
+            log("timed out waiting for notification lifecycle lock");
+            None
+        }
+        Err(error) => {
+            log(&error);
+            None
+        }
+    }
+}
+
+fn stable_hash(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in value.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn deliver_terminal_notification(
@@ -948,6 +1087,95 @@ fn log(message: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    #[cfg(unix)]
+    fn clears_each_outstanding_status_from_its_own_bundle() {
+        let root = notification_test_root("clear");
+        let state = root.join("state");
+        let assets = root.join("assets");
+        fs::create_dir_all(&state).unwrap();
+        let group = local_notification_group(Some("/tmp/herdr-session.sock"), "w1:p1");
+        for status in TRIGGER_STATUSES {
+            let notifier = Paths {
+                state: state.clone(),
+                assets: assets.clone(),
+            }
+            .notifier(bundle_variant(status));
+            fs::create_dir_all(notifier.parent().unwrap()).unwrap();
+            let log_path = root.join(format!("{status}.args"));
+            fs::write(
+                &notifier,
+                format!(
+                    "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n",
+                    log_path.display()
+                ),
+            )
+            .unwrap();
+            fs::set_permissions(&notifier, fs::Permissions::from_mode(0o755)).unwrap();
+            mark_notification_outstanding(&state, &group, status);
+        }
+
+        let paths = Paths { state, assets };
+        clear_delivered_with_paths(&paths, &group);
+
+        for status in TRIGGER_STATUSES {
+            assert_eq!(
+                fs::read_to_string(root.join(format!("{status}.args"))).unwrap(),
+                format!("-remove\n{group}\n")
+            );
+            assert!(!outstanding_notification_path(&paths.state, &group, status).exists());
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn keeps_outstanding_state_when_the_notifier_cannot_clear() {
+        let root = notification_test_root("clear-failure");
+        let state = root.join("state");
+        let assets = root.join("assets");
+        fs::create_dir_all(&state).unwrap();
+        let paths = Paths { state, assets };
+        let notifier = paths.notifier(Some("blocked"));
+        fs::create_dir_all(notifier.parent().unwrap()).unwrap();
+        fs::write(&notifier, "#!/bin/sh\nexit 1\n").unwrap();
+        fs::set_permissions(&notifier, fs::Permissions::from_mode(0o755)).unwrap();
+        let group = local_notification_group(Some("/tmp/herdr-session.sock"), "pane-1");
+        mark_notification_outstanding(&paths.state, &group, "blocked");
+
+        clear_delivered_with_paths(&paths, &group);
+
+        assert!(outstanding_notification_path(&paths.state, &group, "blocked").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn local_notification_groups_are_stable_and_session_scoped() {
+        assert_eq!(
+            local_notification_group(Some("/tmp/a.sock"), "w1:p1"),
+            local_notification_group(Some("/tmp/a.sock"), "w1:p1")
+        );
+        assert_ne!(
+            local_notification_group(Some("/tmp/a.sock"), "w1:p1"),
+            local_notification_group(Some("/tmp/b.sock"), "w1:p1")
+        );
+        assert!(local_notification_group(Some("/tmp/a.sock"), "w1:p1").starts_with("cast-local-"));
+    }
+
+    fn notification_test_root(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "cast-notification-{label}-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
 
     #[test]
     fn encodes_state_file_keys_without_collisions_or_path_characters() {

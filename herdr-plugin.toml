@@ -35,10 +35,18 @@ on = "workspace.focused"
 command = ["herdr-cast", "sync-space"]
 
 # Record the focused pane so the workspace picker's "panes" view can order by
-# most-recent-first. High-volume but cheap: one small bounded state rewrite.
+# most-recent-first. The same hook clears any local macOS agent notification
+# grouped under that pane id. The common path remains one small bounded state
+# rewrite plus two state-file checks.
 [[events]]
 on = "pane.focused"
 command = ["herdr-cast", "record-focus"]
+
+# A closed pane can no longer be visited, so its notification is no longer
+# actionable and its outstanding state should not outlive it.
+[[events]]
+on = "pane.closed"
+command = ["herdr-cast", "clear-notification"]
 
 # Keep the foreground terminal window title aligned with the current Space.
 # Herdr owns only the foreground client title, not per-workspace title state,

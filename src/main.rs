@@ -23,6 +23,7 @@ fn main() {
     let mut arguments = std::env::args().skip(1);
     let result = match arguments.next().as_deref() {
         Some("record-focus") if arguments.next().is_none() => recency::record_focus(),
+        Some("clear-notification") if arguments.next().is_none() => notify::clear_from_event(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("forward-notify") => notify::forward(arguments.collect()),
         Some("palette") if arguments.next().is_none() => palette::run(),
@@ -56,7 +57,7 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <record-focus|notify|forward-notify|palette|directory-workspace",
+            "usage: herdr-cast <record-focus|clear-notification|notify|forward-notify|palette|directory-workspace",
             "|workspace-picker|lazygit|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),

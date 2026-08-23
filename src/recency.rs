@@ -1,6 +1,7 @@
 //! Pane focus-recency log. The `pane.focused` event hook appends the focused
-//! pane id to a move-to-front, bounded log in the plugin state directory; the
-//! workspace picker reads it to order its "panes" view most-recent-first.
+//! pane id to a move-to-front, bounded log in the plugin state directory and
+//! clears that pane's delivered macOS agent notification; the workspace picker
+//! reads the log to order its "panes" view most-recent-first.
 //!
 //! The log only ever orders panes the current `pane.list` already returns, so
 //! stale ids from closed panes or other sessions are filtered out at read time
@@ -40,7 +41,9 @@ pub fn record_focus() -> Result<(), String> {
     };
     let mut entries = read_log(&path);
     move_to_front(&mut entries, &pane_id);
-    write_log(&path, &entries)
+    let result = write_log(&path, &entries);
+    crate::notify::clear_delivered_for_pane(&pane_id);
+    result
 }
 
 /// Read the recency log as an ordered list of pane ids, most recent first.

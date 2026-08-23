@@ -73,14 +73,15 @@ request/response contract.
 - `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `notify`, `forward-notify`,
-  `palette`, `focus`, `sync-space`, `sync-title`, `sync-spaces`, and
-  `shell-init` commands.
+- `src/main.rs`: dispatches the Rust binary's `notify`, `clear-notification`,
+  `forward-notify`, `palette`, `focus`, `sync-space`, `sync-title`,
+  `sync-spaces`, and `shell-init` commands.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
-  macOS notifier registration and delivery, Linux terminal notification
-  requests, macOS click-to-focus, and the `forward-notify` receiver: the Nix
+  macOS notifier registration, delivery, and pane-group removal, Linux
+  terminal notification requests, macOS click-to-focus, and the
+  `forward-notify` receiver: the Nix
   package installs a `terminal-notifier` shim that execs this command so
   Herdr's macOS client renders forwarded remote payloads (layout parts,
   grouping, status from the v1 JSON body) through the status's HerdrNotify
@@ -99,8 +100,9 @@ request/response contract.
   and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
 - `src/recency.rs`: bounded move-to-front log of focused pane ids, recorded by
   the `record-focus` command on `pane.focused` events into the injected state
-  directory. Read at picker open; stale ids for closed panes are filtered
-  against `pane.list` and never name a pane.
+  directory. The same hook clears outstanding local macOS notifications for
+  the focused pane. Read at picker open; stale ids for closed panes are
+  filtered against `pane.list` and never name a pane.
 - `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
   `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
   `pane.process_info`, and prints the zsh integration that triggers a sync.
