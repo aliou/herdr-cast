@@ -2,3 +2,8 @@
 .DS_Store
 # rust build artifacts
 /target
+
+# node / pi extension dev artifacts
+node_modules
+package-lock.json
+pnpm-lock.yaml

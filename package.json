@@ -1,0 +1,28 @@
+{
+  "name": "@aliou/herdr-cast-pi",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension that reports agent blocked/working/idle state to Herdr.",
+  "keywords": ["pi-package"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aliou/herdr-cast"
+  },
+  "pi": {
+    "extensions": ["./extension"]
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.84.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.10"
+  }
+}
