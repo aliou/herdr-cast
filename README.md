@@ -364,6 +364,23 @@ opens lazygit directly when the focused pane sits in (or is) a repository,
 and otherwise fuzzy-picks one from the repositories found up to 3 levels
 below it, instead of lazygit's own no-repository error.
 
+```toml
+[[keys.command]]
+command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint yazi'
+description = "open yazi"
+key = "prefix+y"
+type = "shell"
+```
+
+The `yazi` entrypoint opens yazi in the focused pane's working directory. A
+bare `command = "yazi"` popup would open in the plugin root instead.
+
+Both `lazygit` and `yazi` stream the child CLI's stdin, stdout, and stderr
+straight into the popup. When the child exits non-zero, the popup prints a
+bold-red `[cast] <program> exited with <status>` line and waits for a keypress
+before closing, so a failure is never swallowed. Background hooks and
+non-interactive commands never wait.
+
 ## Shell integration
 
 The zsh hooks keep Space metadata current between plugin events. `precmd`

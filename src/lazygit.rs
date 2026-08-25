@@ -2,30 +2,20 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::Duration;
 
-use serde_json::Value;
-
-use crate::api::SocketClient;
-use crate::palette::focused_pane_id;
 use crate::picker::{pick_streaming, Choice, Picker};
+use crate::popup_cli;
 use crate::space;
 
 /// How many directory levels below the current directory to search for git
 /// repositories when the current directory is not one itself.
 const MAX_DEPTH: u32 = 3;
 
-const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
-
 /// Open lazygit against the current directory's repository, or, when the
 /// current directory is not inside a repository, fuzzy-pick one from the
 /// repositories found up to `MAX_DEPTH` levels below it.
 pub fn run() -> Result<(), String> {
-    let pane_id = focused_pane_id().ok_or_else(|| "focused pane not available".to_string())?;
-    let socket =
-        std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())?;
-    let client = SocketClient::with_timeout(socket, SOCKET_TIMEOUT);
-    let cwd = pane_cwd(&client, &pane_id)?;
+    let cwd = popup_cli::focused_pane_cwd()?;
 
     let repository = match space::repository_root(&cwd) {
         Some(root) => root,
@@ -63,38 +53,9 @@ pub fn run() -> Result<(), String> {
         }
     };
 
-    let status = Command::new("lazygit")
-        .arg("-p")
-        .arg(&repository)
-        .status()
-        .map_err(|error| format!("failed to launch lazygit: {error}"))?;
-    if !status.success() {
-        return Err(format!("lazygit exited with {status}"));
-    }
-    Ok(())
-}
-
-/// The focused pane's own directory, preferring `cwd` (the shell's own
-/// directory) over `foreground_cwd`, matching `PaneInfo::working_directory`.
-fn pane_cwd(client: &SocketClient, pane_id: &str) -> Result<PathBuf, String> {
-    let response = client.send(
-        "cast:pane-get",
-        "pane.get",
-        serde_json::json!({ "pane_id": pane_id }),
-    )?;
-    extract_cwd(&response).ok_or_else(|| "pane.get missing cwd".to_string())
-}
-
-fn extract_cwd(response: &Value) -> Option<PathBuf> {
-    response
-        .pointer("/result/pane/cwd")
-        .and_then(Value::as_str)
-        .or_else(|| {
-            response
-                .pointer("/result/pane/foreground_cwd")
-                .and_then(Value::as_str)
-        })
-        .map(PathBuf::from)
+    let mut command = Command::new("lazygit");
+    command.arg("-p").arg(&repository);
+    popup_cli::run("lazygit", command)
 }
 
 /// Walks 1 to `max_depth` directory levels below `directory`, calling
@@ -207,36 +168,5 @@ mod tests {
         assert_eq!(found, vec![root.join("outer")]);
 
         let _ = fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn extract_cwd_prefers_cwd_over_foreground_cwd() {
-        let response = serde_json::json!({
-            "result": {
-                "pane": {
-                    "cwd": "/repo",
-                    "foreground_cwd": "/repo/subdir"
-                }
-            }
-        });
-        assert_eq!(extract_cwd(&response), Some(PathBuf::from("/repo")));
-    }
-
-    #[test]
-    fn extract_cwd_falls_back_to_foreground_cwd() {
-        let response = serde_json::json!({
-            "result": {
-                "pane": {
-                    "foreground_cwd": "/repo/subdir"
-                }
-            }
-        });
-        assert_eq!(extract_cwd(&response), Some(PathBuf::from("/repo/subdir")));
-    }
-
-    #[test]
-    fn extract_cwd_missing_is_none() {
-        let response = serde_json::json!({ "result": { "pane": {} } });
-        assert_eq!(extract_cwd(&response), None);
     }
 }
