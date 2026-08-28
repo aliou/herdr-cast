@@ -18,20 +18,27 @@ Click a GIF to play the MP4.
 Switch between the nested spaces view, the flat agents view, and the
 most-recent panes view, filter, and focus a pane.
 
-[![Workspace picker](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker-v3.gif)](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker.mp4)
+[![Workspace picker](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker-v4.gif)](https://assets.aliou.me/github/aliou/herdr-cast/workspace-picker.mp4)
 
 ### New workspace
 
 Filter ranked directories, toggle zoxide and alphabetical order, then create
 the workspace.
 
-[![New workspace](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace-v4.gif)](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace.mp4)
+[![New workspace](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace-v5.gif)](https://assets.aliou.me/github/aliou/herdr-cast/directory-workspace.mp4)
 
 ### Layout palette
 
-Flip a two-pane split, then move a pane into a new workspace.
+Flip a two-pane split, move a pane into a new workspace, then rename it.
 
-[![Layout palette](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette.gif)](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette.mp4)
+[![Layout palette](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette-v2.gif)](https://assets.aliou.me/github/aliou/herdr-cast/layout-palette.mp4)
+
+### lazygit
+
+Open lazygit against the focused pane's repository, or fuzzy-pick one from the
+repositories found below it when the pane is not inside one.
+
+[![lazygit](https://assets.aliou.me/github/aliou/herdr-cast/lazygit.gif)](https://assets.aliou.me/github/aliou/herdr-cast/lazygit.mp4)
 
 ## Features
 
@@ -331,7 +338,12 @@ for one outside it, `378 · 11 repos` for a directory of repositories, and
 `sbx · copper-eva-stratt` for a sandbox session. Anything else gets a blank
 second line rather than none.
 
-Example pane bindings:
+Example pane bindings. The three fuzzy pickers open through
+`herdr-cast open-popup`, which measures the terminal first and clamps the
+popup to the larger of a percentage of the available area and a fixed minimum,
+so a popup stays usable on a 14" laptop as well as a 27" display. The
+`layout-palette`, `lazygit`, and `yazi` entrypoints use fixed sizes set in
+`herdr-plugin.toml`, so they open through `plugin pane open` directly.
 
 ```toml
 [[keys.command]]
@@ -341,13 +353,13 @@ key = "prefix+p"
 type = "shell"
 
 [[keys.command]]
-command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint directory-workspace'
+command = '"${HERDR_BIN_PATH:-herdr}" herdr-cast open-popup --entrypoint directory-workspace --min-width 60 --min-height 20 --pct-width 37 --pct-height 33'
 description = "create workspace from a ranked directory"
 key = "prefix+shift+c"
 type = "shell"
 
 [[keys.command]]
-command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint workspace-picker'
+command = '"${HERDR_BIN_PATH:-herdr}" herdr-cast open-popup --entrypoint workspace-picker --min-width 60 --min-height 20 --pct-width 37 --pct-height 33'
 description = "focus an existing workspace or pane"
 key = "prefix+space"
 type = "shell"
@@ -358,6 +370,11 @@ description = "open lazygit"
 key = "prefix+g"
 type = "shell"
 ```
+
+`open-popup` reads the terminal area through `pane.layout`, resolves the
+dimensions, then calls `plugin.pane.open` with concrete cell counts. Its
+flags are `--entrypoint`, `--min-width`, `--min-height`, `--pct-width`, and
+`--pct-height` (all required).
 
 The `lazygit` entrypoint replaces a bare `command = "lazygit"` popup key. It
 opens lazygit directly when the focused pane sits in (or is) a repository,
@@ -376,10 +393,11 @@ The `yazi` entrypoint opens yazi in the focused pane's working directory. A
 bare `command = "yazi"` popup would open in the plugin root instead.
 
 Both `lazygit` and `yazi` stream the child CLI's stdin, stdout, and stderr
-straight into the popup. When the child exits non-zero, the popup prints a
-bold-red `[cast] <program> exited with <status>` line and waits for a keypress
-before closing, so a failure is never swallowed. Background hooks and
-non-interactive commands never wait.
+straight into the popup through `src/popup_cli.rs`. When the child exits
+non-zero, the popup prints a bold-red `[cast] <program> exited with <status>`
+line and waits for a keypress before closing, so a failure is never swallowed.
+The wait is an allowlist over interactive popup entrypoints; background hooks
+and non-interactive commands never wait.
 
 ## Shell integration
 
@@ -400,9 +418,9 @@ Herdr's API.
 ## Architecture
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
-  `forward-notify`, `focus`,
-  `palette`, `directory-workspace`, `workspace-picker`, `sync-space`,
-  `sync-title`, `sync-spaces`, and `shell-init` commands.
+  `forward-notify`, `focus`, `record-focus`, `palette`,
+  `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
+  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, the shared two-line
@@ -411,11 +429,23 @@ Herdr's API.
   click-to-focus behavior, and the `forward-notify` receiver that decodes
   forwarded payloads for the `terminal-notifier` shim.
 - `src/picker.rs` provides the reusable fuzzy picker and rendering.
-- `src/palette.rs` implements layout actions.
+- `src/palette.rs` implements layout actions: flip a two-pane split, move the
+  focused pane to a new tab or a new workspace, and rename the current tab,
+  current workspace, or foreground terminal window title.
 - `src/workspace.rs` implements workspace creation and workspace/pane focus.
 - `src/space.rs` reports Space sidebar metadata and prints the zsh
   integration.
 - `src/zoxide.rs` builds and orders directory candidates.
+- `src/popup.rs` resolves popup dimensions as the larger of a percentage of
+  the current terminal area and a fixed minimum cell size, then opens the
+  plugin entrypoint through `plugin.pane.open`. Used by `open-popup` so a
+  popup stays usable on small screens.
+- `src/popup_cli.rs` streams a child CLI's stdin, stdout, and stderr into a
+  popup and surfaces a non-zero exit as the `[cast] <program> exited with
+  <status>` line. Shared by the `lazygit` and `yazi` entrypoints.
+- `src/lazygit.rs` opens lazygit in the focused pane's repository, or
+  fuzzy-picks one found up to three levels below it.
+- `src/yazi.rs` opens yazi in the focused pane's working directory.
 - `assets/HerdrNotify.app` is the neutral bundled macOS notification
   application; `assets/HerdrNotify-blocked.app` and
   `assets/HerdrNotify-done.app` are the per-status identities (same binary,

@@ -73,9 +73,14 @@ request/response contract.
 - `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `notify`, `clear-notification`,
-  `forward-notify`, `palette`, `focus`, `sync-space`, `sync-title`,
-  `sync-spaces`, and `shell-init` commands.
+- `src/main.rs`: dispatches the Rust binary's `record-focus`, `notify`,
+  `clear-notification`, `forward-notify`, `focus`, `palette`,
+  `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
+  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands. The
+  `palette`, `directory-workspace`, `workspace-picker`, `lazygit`, and `yazi`
+  commands are interactive popup entrypoints; on a non-zero exit they render a
+  bold-red `[cast] ...` line and wait for a keypress before the popup closes.
+  Background hooks and non-interactive commands never wait.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
@@ -90,7 +95,10 @@ request/response contract.
   canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it runs
   in client context.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
-  `pane.move` to flip a split or move the focused pane to a new workspace.
+  `pane.move` to flip a two-pane split or move the focused pane to a new tab
+  or a new workspace, and `workspace.rename` / `tab.rename` /
+  `client.window_title.set` to rename the current tab, current workspace, or
+  foreground terminal window title.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
   editing, tree rows, and animated agent-status icons.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
@@ -111,6 +119,24 @@ request/response contract.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order.
+- `src/popup.rs`: `open-popup` command. Resolves popup dimensions as the
+  larger of a percentage of the current terminal area (read through
+  `pane.layout`) and a fixed minimum cell size, then opens the entrypoint
+  through `plugin.pane.open` with concrete dimensions. Keeps fuzzy-picker
+  popups usable on small screens; sizing flags come from the caller's key
+  binding rather than the manifest.
+- `src/popup_cli.rs`: runs a child CLI inside a popup, inheriting stdin,
+  stdout, and stderr so a TUI such as lazygit or yazi renders directly in the
+  pane. Resolves the focused pane's cwd through `pane.get`. A non-zero exit
+  becomes the `<program> exited with <status>` error that `main.rs` renders
+  and waits on. Use only for CLIs whose output belongs in the popup; for CLIs
+  whose stdout must be parsed (zoxide, codesign, Launch Services), keep using
+  `Command::output()` directly.
+- `src/lazygit.rs`: `lazygit` entrypoint. Opens lazygit in the focused pane's
+  repository, or fuzzy-picks one found up to three levels below it when the
+  pane is not inside a repository.
+- `src/yazi.rs`: `yazi` entrypoint. Opens yazi in the focused pane's working
+  directory resolved through `src/popup_cli.rs`.
 - `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve
   its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
   finds it under `assets/`; the Nix package also installs the whole
@@ -220,6 +246,11 @@ runtime invocation.
   before changing them.
 - Keep personal policy constants in `src/notify.rs`. Do not add a config file or
   per-setting environment overrides without an explicit request.
+- The wait-on-error hold is an allowlist over interactive popup entrypoints
+  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`) in
+  `main.rs`. Background hooks and non-interactive commands must never wait for
+  a keypress. Add a popup entrypoint to the allowlist when it can fail in a
+  way the user should read before the popup closes.
 - Add dependencies only when the Rust standard library and current crates
   cannot cover the need.
 
