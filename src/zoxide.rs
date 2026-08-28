@@ -3,6 +3,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::lazygit;
+
 pub struct RankedDirectory {
     pub path: PathBuf,
     pub label: String,
@@ -16,21 +18,19 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
         .map(PathBuf::from)
         .ok_or_else(|| "HOME is not set".to_string())?;
     let projects_root = home.join("code/src");
-    let output = Command::new("zoxide")
-        .args(["query", "-ls"])
-        .output()
-        .map_err(|error| format!("failed to run zoxide: {error}"))?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        return Err(format!(
-            "zoxide query failed with {}: {}",
-            output.status,
-            detail.trim()
-        ));
-    }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| "zoxide returned a path that is not valid UTF-8".to_string())?;
-    let zoxide_entries = parse_scores(&stdout);
+    // zoxide is absent on sandbox hosts and optional elsewhere. When it is
+    // missing, or present but yields nothing (an uninitialized db), fall back
+    // to a filesystem scan of the project roots so the picker still works.
+    let zoxide_entries = match Command::new("zoxide").args(["query", "-ls"]).output() {
+        Ok(output) if output.status.success() => {
+            let stdout = String::from_utf8(output.stdout)
+                .map_err(|_| "zoxide returned a path that is not valid UTF-8".to_string())?;
+            parse_scores(&stdout)
+        }
+        Ok(_) => Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("failed to run zoxide: {error}")),
+    };
     let scores = zoxide_entries
         .iter()
         .map(|(score, path)| (path.clone(), *score))
@@ -52,6 +52,11 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
                 add_directory(&mut candidates, &scores, path);
             }
         }
+    }
+
+    if candidates.is_empty() {
+        let roots = [projects_root.clone(), PathBuf::from("/workspace/code/src")];
+        return fallback_directories(&home, &roots);
     }
 
     let mut entries = candidates.into_iter().collect::<Vec<_>>();
@@ -79,6 +84,59 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
             display_path: compact_home(&home, &path),
             path,
             score,
+        })
+        .collect())
+}
+
+/// Filesystem fallback for [`ranked_directories`] when zoxide is absent or has
+/// no ranked project directories. Scans each root for git repositories up to
+/// [`lazygit::MAX_DEPTH`] levels deep, so a sandbox without zoxide can still
+/// create a workspace at a nearby project.
+///
+/// Roots are `$HOME/code/src` (the tree zoxide already filters to) and
+/// `/workspace/code/src` (where sandbox hosts keep their checkout). A
+/// directory without a `.git` entry is skipped, matching `lazygit`'s notion of
+/// a project root; a non-git directory can still be opened by typing its path
+/// in the picker. Scores are zero, so the picker's zoxide/alpha order toggle
+/// collapses to alphabetical until zoxide is available.
+fn fallback_directories(home: &Path, roots: &[PathBuf]) -> Result<Vec<RankedDirectory>, String> {
+    let cancelled = std::sync::atomic::AtomicBool::new(false);
+    let mut found: BTreeMap<PathBuf, ()> = BTreeMap::new();
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        lazygit::scan_repositories(root, lazygit::MAX_DEPTH, &cancelled, &mut |path| {
+            found.insert(path, ());
+        });
+    }
+    if found.is_empty() {
+        return Err(
+            "no project directories found under ~/code/src or /workspace/code/src".to_string(),
+        );
+    }
+    let mut paths: Vec<PathBuf> = found.into_keys().collect();
+    paths.sort();
+    let alpha_order = paths
+        .iter()
+        .enumerate()
+        .map(|(index, path)| (path.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    Ok(paths
+        .into_iter()
+        .map(|path| {
+            let root = roots
+                .iter()
+                .find(|root| path.starts_with(root))
+                .map(PathBuf::as_path)
+                .unwrap_or(home);
+            RankedDirectory {
+                label: directory_label(home, root, &path),
+                display_path: compact_home(home, &path),
+                path: path.clone(),
+                score: 0.0,
+                alpha_order: alpha_order.get(&path).copied().unwrap_or(usize::MAX),
+            }
         })
         .collect())
 }
@@ -261,5 +319,47 @@ mod tests {
             "tmp/repro"
         );
         assert_eq!(directory_label(home, &projects, &home.join(".dot")), ".dot");
+    }
+
+    fn init_repo(path: &Path) {
+        fs::create_dir_all(path).unwrap();
+        fs::create_dir_all(path.join(".git")).unwrap();
+    }
+
+    #[test]
+    fn fallback_finds_git_repos_under_the_project_root() {
+        let home = std::env::temp_dir().join(format!("cast-fallback-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        let projects_root = home.join("code/src");
+        init_repo(&projects_root.join("github.com/aliou/one"));
+        init_repo(&projects_root.join("github.com/aliou/two"));
+        // A directory without `.git` is not a project root and is skipped.
+        fs::create_dir_all(projects_root.join("github.com/aliou/not-a-repo")).unwrap();
+
+        let roots = [projects_root.clone()];
+        let dirs = fallback_directories(&home, &roots).unwrap();
+        let labels: Vec<String> = dirs.iter().map(|d| d.label.clone()).collect();
+        assert!(labels.contains(&"aliou/one".to_string()));
+        assert!(labels.contains(&"aliou/two".to_string()));
+        assert!(!labels.iter().any(|label| label.contains("not-a-repo")));
+        // No zoxide scores: every fallback entry scores zero.
+        assert!(dirs.iter().all(|d| d.score == 0.0));
+        // alpha_order is a dense 0..n so the picker's alpha toggle works.
+        let mut orders: Vec<usize> = dirs.iter().map(|d| d.alpha_order).collect();
+        orders.sort();
+        assert_eq!(orders, (0..dirs.len()).collect::<Vec<_>>());
+
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn fallback_errors_when_no_repos_are_found() {
+        let home = std::env::temp_dir().join(format!("cast-fallback-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&home).unwrap();
+        // No roots to scan: nothing can be found, so the picker surfaces the
+        // error instead of opening empty.
+        assert!(fallback_directories(&home, &[]).is_err());
+        let _ = fs::remove_dir_all(&home);
     }
 }

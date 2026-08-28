@@ -118,7 +118,10 @@ request/response contract.
   workspace picker.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
-  alphabetical order.
+  alphabetical order. When zoxide is absent or has no ranked directories
+  (the sandbox case), falls back to a filesystem scan of `~/code/src` and
+  `/workspace/code/src` for git repositories, reusing `lazygit`'s scanner so a
+  sandbox without zoxide can still create a workspace at a nearby project.
 - `src/popup.rs`: `open-popup` command. Resolves popup dimensions as the
   larger of a percentage of the current terminal area (read through
   `pane.layout`) and a fixed minimum cell size, then opens the entrypoint

@@ -9,7 +9,10 @@ use crate::space;
 
 /// How many directory levels below the current directory to search for git
 /// repositories when the current directory is not one itself.
-const MAX_DEPTH: u32 = 3;
+///
+/// Also reused by `zoxide`'s filesystem fallback so a sandbox without zoxide
+/// scans project roots to the same depth `lazygit` does.
+pub(crate) const MAX_DEPTH: u32 = 3;
 
 /// Open lazygit against the current directory's repository, or, when the
 /// current directory is not inside a repository, fuzzy-pick one from the
@@ -64,7 +67,7 @@ pub fn run() -> Result<(), String> {
 /// repository, so nested/vendored repositories do not surface separately.
 /// Checks `cancelled` between entries so a caller that has moved on can stop
 /// an unfinished scan instead of leaving it to walk the rest of the tree.
-fn scan_repositories(
+pub(crate) fn scan_repositories(
     directory: &Path,
     max_depth: u32,
     cancelled: &AtomicBool,

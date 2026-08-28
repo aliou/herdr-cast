@@ -112,9 +112,6 @@ pub fn create_from_directory() -> Result<(), String> {
     let panes = list_panes(&client)?;
     let existing = workspace_directories(&workspaces, &panes);
     let directories = zoxide::ranked_directories()?;
-    if directories.is_empty() {
-        return Err("zoxide has no ranked directories".to_string());
-    }
     let normalized_directories = directories
         .iter()
         .map(|directory| normalize_path(&directory.path))

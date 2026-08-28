@@ -133,6 +133,10 @@ The directory picker opens with `prefix+shift+c` in the local Herdr config.
 - Reads candidates and frecency scores from `zoxide query -ls`.
 - Keeps zoxide entries below `~/code/src`.
 - Always includes `~/.dot` and top-level directories below `~/tmp`.
+- Falls back to a filesystem scan of `~/code/src` and `/workspace/code/src`
+  for git repositories when zoxide is absent or has no ranked directories, so
+  the picker still works in a sandbox that does not ship zoxide. Fallback
+  entries carry no frecency score.
 - Uses compact labels such as `aliou/herdr-cast` and `tmp/repro` while keeping
   the full tilde path visible.
 - Opens in zoxide mode. Press `Tab` to toggle zoxide and alphabetical modes for
@@ -259,7 +263,8 @@ paths or titles can run under it.
 - macOS 26 or newer, or Linux with a terminal/client that supports Herdr
   notifications
 - Herdr 0.8.0 or newer
-- `zoxide`
+- `zoxide` (optional; the new-workspace picker falls back to a filesystem
+  scan when it is absent)
 - Rust and Cargo for local builds
 
 This checkout uses Nix when Rust tooling is not already available.
