@@ -17,20 +17,6 @@ const REGISTER_TTL_SECONDS: u64 = 6 * 60 * 60;
 const OUTSTANDING_NOTIFICATION_PREFIX: &str = "outstanding-notification";
 const LSREGISTER: &str = "/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister";
 
-#[derive(Debug, Default, Deserialize)]
-struct EventEnvelope {
-    #[serde(default)]
-    data: EventData,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct EventData {
-    pane_id: Option<String>,
-    workspace_id: Option<String>,
-    agent_status: Option<String>,
-    agent: Option<String>,
-}
-
 #[derive(Serialize)]
 struct NotificationShowParams {
     title: String,
@@ -299,18 +285,22 @@ pub fn run() -> Result<(), String> {
     fs::create_dir_all(&paths.state)
         .map_err(|error| format!("failed to create plugin state directory: {error}"))?;
 
-    let event: EventEnvelope = environment_json("HERDR_PLUGIN_EVENT_JSON");
-    let Some(pane_id) = event.data.pane_id.as_deref() else {
+    let Some(event) = crate::events::PluginEvent::from_environment() else {
+        log("dropped event without a parsable payload");
+        return Ok(());
+    };
+    let Some(pane_id) = event.pane_id() else {
         log("dropped event without data.pane_id");
         return Ok(());
     };
+    let pane_id = pane_id.as_str();
 
     let socket_path = std::env::var("HERDR_SOCKET_PATH").ok();
     let client = socket_path
         .as_deref()
         .map(|path| SocketClient::with_timeout(path, Duration::from_millis(250)));
     let mut pane = Value::Null;
-    let status = event.data.agent_status.or_else(|| {
+    let status = event.agent_status().or_else(|| {
         pane = pane_info(client.as_ref(), pane_id);
         string_at(&pane, "/result/pane/agent_status")
     });
@@ -326,12 +316,10 @@ pub fn run() -> Result<(), String> {
     }
 
     let workspace_id = event
-        .data
-        .workspace_id
+        .workspace_id()
         .or_else(|| string_at(&pane, "/result/pane/workspace_id"));
     let agent = event
-        .data
-        .agent
+        .agent()
         .or_else(|| string_at(&pane, "/result/pane/agent"))
         .unwrap_or_else(|| "agent".to_string());
     let cwd = string_at(&pane, "/result/pane/cwd");
@@ -465,12 +453,15 @@ pub fn clear_delivered_for_pane(pane_id: &str) {
 /// Hook entrypoint for lifecycle events such as `pane.closed` that should
 /// discard a pane's no-longer-actionable notification.
 pub fn clear_from_event() -> Result<(), String> {
-    let event: EventEnvelope = environment_json("HERDR_PLUGIN_EVENT_JSON");
-    let Some(pane_id) = event.data.pane_id.as_deref() else {
+    let Some(event) = crate::events::PluginEvent::from_environment() else {
+        log("dropped notification-clear event without a parsable payload");
+        return Ok(());
+    };
+    let Some(pane_id) = event.pane_id() else {
         log("dropped notification-clear event without data.pane_id");
         return Ok(());
     };
-    clear_delivered_for_pane(pane_id);
+    clear_delivered_for_pane(&pane_id);
     Ok(())
 }
 
@@ -869,13 +860,6 @@ impl Paths {
             .map(PathBuf::from)
             .unwrap_or_else(|| std::env::temp_dir().join("herdr-cast"))
     }
-}
-
-fn environment_json<T: for<'de> Deserialize<'de> + Default>(name: &str) -> T {
-    std::env::var(name)
-        .ok()
-        .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default()
 }
 
 fn pane_info(client: Option<&SocketClient>, pane_id: &str) -> Value {

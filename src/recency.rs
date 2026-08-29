@@ -1,7 +1,7 @@
-//! Pane focus-recency log. The `pane.focused` event hook appends the focused
-//! pane id to a move-to-front, bounded log in the plugin state directory and
-//! clears that pane's delivered macOS agent notification; the workspace picker
-//! reads the log to order its "panes" view most-recent-first.
+//! Pane focus-recency log. The `pane.focused` coordinator appends the focused
+//! pane id to a move-to-front, bounded log in the plugin state directory; the
+//! workspace picker reads the log to order its "panes" view
+//! most-recent-first.
 //!
 //! The log only ever orders panes the current `pane.list` already returns, so
 //! stale ids from closed panes or other sessions are filtered out at read time
@@ -10,40 +10,20 @@
 use std::fs;
 use std::path::PathBuf;
 
-use serde::Deserialize;
-
 const PANE_RECENCY_FILE: &str = "pane-recency";
 /// Bound the log so a long-running session cannot grow it without limit. Far
 /// more than any realistic number of panes, small enough to read and rewrite
 /// atomically on every focus.
 const MAX_ENTRIES: usize = 256;
 
-#[derive(Debug, Default, Deserialize)]
-struct EventEnvelope {
-    #[serde(default)]
-    data: EventData,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct EventData {
-    pane_id: Option<String>,
-}
-
-/// Hook entrypoint: read the focused pane id from the event payload and record
-/// it at the front of the log.
-pub fn record_focus() -> Result<(), String> {
+/// Record `pane_id` at the front of the recency log.
+pub fn record(pane_id: &str) -> Result<(), String> {
     let Some(path) = recency_file() else {
         return Ok(());
     };
-    let Some(pane_id) = event_pane_id() else {
-        log("dropped pane.focused event without data.pane_id");
-        return Ok(());
-    };
     let mut entries = read_log(&path);
-    move_to_front(&mut entries, &pane_id);
-    let result = write_log(&path, &entries);
-    crate::notify::clear_delivered_for_pane(&pane_id);
-    result
+    move_to_front(&mut entries, pane_id);
+    write_log(&path, &entries)
 }
 
 /// Read the recency log as an ordered list of pane ids, most recent first.
@@ -59,15 +39,6 @@ fn recency_file() -> Option<PathBuf> {
     std::env::var_os("HERDR_PLUGIN_STATE_DIR")
         .map(PathBuf::from)
         .map(|directory| directory.join(PANE_RECENCY_FILE))
-}
-
-fn event_pane_id() -> Option<String> {
-    let event = std::env::var("HERDR_PLUGIN_EVENT_JSON").ok()?;
-    let envelope: EventEnvelope = serde_json::from_str(&event).ok()?;
-    envelope
-        .data
-        .pane_id
-        .filter(|pane_id| !pane_id.trim().is_empty())
 }
 
 fn read_log(path: &PathBuf) -> Vec<String> {
@@ -111,10 +82,6 @@ fn write_log(path: &PathBuf, entries: &[String]) -> Result<(), String> {
         let _ = fs::remove_file(&temporary);
         format!("failed to activate pane recency: {error}")
     })
-}
-
-fn log(message: &str) {
-    eprintln!("[cast] {message}");
 }
 
 #[cfg(test)]
@@ -170,18 +137,16 @@ mod tests {
     }
 
     #[test]
-    fn record_focus_promotes_the_event_pane_id() {
+    fn record_promotes_the_pane_id() {
         let _guard = crate::test_support::ENV_MUTEX.lock().unwrap();
         let dir = std::env::temp_dir().join(format!("cast-recency-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let previous = std::env::var_os("HERDR_PLUGIN_STATE_DIR");
         std::env::set_var("HERDR_PLUGIN_STATE_DIR", &dir);
-        std::env::set_var("HERDR_PLUGIN_EVENT_JSON", r#"{"data":{"pane_id":"p:new"}}"#);
         // Seed an existing log.
         write_log(&dir.join(PANE_RECENCY_FILE), &["p:old".into()]).unwrap();
-        record_focus().unwrap();
+        record("p:new").unwrap();
         let loaded = load();
-        std::env::remove_var("HERDR_PLUGIN_EVENT_JSON");
         if let Some(previous) = previous {
             std::env::set_var("HERDR_PLUGIN_STATE_DIR", previous);
         } else {

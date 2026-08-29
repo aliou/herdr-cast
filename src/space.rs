@@ -27,7 +27,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::api::SocketClient;
 
@@ -606,18 +605,7 @@ fn current_workspace_id() -> Option<String> {
 }
 
 fn event_workspace_id() -> Option<String> {
-    let event = std::env::var("HERDR_PLUGIN_EVENT_JSON").ok()?;
-    let value: Value = serde_json::from_str(&event).ok()?;
-    for pointer in [
-        "/data/workspace_id",
-        "/data/workspace/workspace_id",
-        "/workspace_id",
-    ] {
-        if let Some(workspace_id) = value.pointer(pointer).and_then(Value::as_str) {
-            return non_empty(Some(workspace_id.to_string()));
-        }
-    }
-    None
+    crate::events::PluginEvent::from_environment().and_then(|event| event.workspace_id())
 }
 
 fn non_empty(value: Option<String>) -> Option<String> {

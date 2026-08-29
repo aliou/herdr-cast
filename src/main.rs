@@ -1,4 +1,5 @@
 mod api;
+mod events;
 mod lazygit;
 mod notify;
 mod palette;
@@ -25,7 +26,7 @@ fn main() {
     let mut arguments = std::env::args().skip(1);
     let command = arguments.next();
     let result = match command.as_deref() {
-        Some("record-focus") if arguments.next().is_none() => recency::record_focus(),
+        Some("record-focus") if arguments.next().is_none() => record_focus_hook(),
         Some("clear-notification") if arguments.next().is_none() => notify::clear_from_event(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("forward-notify") => notify::forward(arguments.collect()),
@@ -80,6 +81,21 @@ fn main() {
         }
         std::process::exit(1);
     }
+}
+
+/// The `pane.focused` hook: record focus recency and clear any notification
+/// delivered for that pane.
+fn record_focus_hook() -> Result<(), String> {
+    let Some(pane_id) = events::PluginEvent::from_environment()
+        .as_ref()
+        .and_then(events::PluginEvent::pane_id)
+    else {
+        eprintln!("[cast] dropped pane.focused event without data.pane_id");
+        return Ok(());
+    };
+    recency::record(&pane_id)?;
+    notify::clear_delivered_for_pane(&pane_id);
+    Ok(())
 }
 
 /// Renders the `[cast] <error>` line, colored bold-red when `colorize` is true.
