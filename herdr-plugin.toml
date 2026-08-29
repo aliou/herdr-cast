@@ -16,6 +16,11 @@ platforms = ["macos", "linux"]
 [[startup]]
 command = ["herdr-cast", "sync-spaces"]
 
+# Own the foreground terminal window title from the first moment a server
+# runs: push the composed title and spawn the per-session title daemon.
+[[startup]]
+command = ["herdr-cast", "sync-title"]
+
 # Fire a notification whenever a pane's agent status changes. The handler
 # filters to the hard-coded blocked and done statuses.
 [[events]]
@@ -34,13 +39,15 @@ command = ["herdr-cast", "sync-space"]
 on = "workspace.focused"
 command = ["herdr-cast", "sync-space"]
 
-# Record the focused pane so the workspace picker's "panes" view can order by
-# most-recent-first. The same hook clears any local macOS agent notification
-# grouped under that pane id. The common path remains one small bounded state
-# rewrite plus two state-file checks.
+# React to focus changes. One coordinator fans out to every feature that
+# cares: the recency log for the workspace picker's ordering, clearing a
+# delivered macOS notification for the visited pane, and an instant window
+# title refresh (the per-session title daemon keeps it current between
+# events; Herdr withholds `pane.updated`, so only its poll sees a program
+# setting a new terminal title).
 [[events]]
 on = "pane.focused"
-command = ["herdr-cast", "record-focus"]
+command = ["herdr-cast", "pane-focused"]
 
 # A closed pane can no longer be visited, so its notification is no longer
 # actionable and its outstanding state should not outlive it.
@@ -48,16 +55,9 @@ command = ["herdr-cast", "record-focus"]
 on = "pane.closed"
 command = ["herdr-cast", "clear-notification"]
 
-# Keep the foreground terminal window title aligned with the current Space.
-# Herdr owns only the foreground client title, not per-workspace title state,
-# so refresh it on focus and when a focused Space is renamed.
-[[events]]
-on = "workspace.focused"
-command = ["herdr-cast", "sync-title"]
-
-[[events]]
-on = "workspace.renamed"
-command = ["herdr-cast", "sync-title"]
+# The terminal window title is owned by the title daemon (`sync-title`,
+# spawned at startup and re-ensured on focus events); it no longer tracks
+# the workspace label, so it needs no workspace event subscriptions.
 
 # A searchable popup palette for layout operations on the focused pane.
 [[panes]]

@@ -8,6 +8,7 @@ mod popup;
 mod popup_cli;
 mod recency;
 mod space;
+mod title;
 mod workspace;
 mod yazi;
 mod zoxide;
@@ -26,7 +27,8 @@ fn main() {
     let mut arguments = std::env::args().skip(1);
     let command = arguments.next();
     let result = match command.as_deref() {
-        Some("record-focus") if arguments.next().is_none() => record_focus_hook(),
+        Some("pane-focused") if arguments.next().is_none() => pane_focused_hook(),
+        Some("daemon") if arguments.next().is_none() => title::daemon(),
         Some("clear-notification") if arguments.next().is_none() => notify::clear_from_event(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("forward-notify") => notify::forward(arguments.collect()),
@@ -42,7 +44,7 @@ fn main() {
             (Some("--await-remote"), None) => space::sync(true),
             _ => Err("usage: herdr-cast sync-space [--await-remote]".to_string()),
         },
-        Some("sync-title") if arguments.next().is_none() => space::sync_title(),
+        Some("sync-title") if arguments.next().is_none() => title::sync_title(),
         Some("sync-spaces") if arguments.next().is_none() => space::sync_all(),
         Some("shell-init") => match (arguments.next(), arguments.next()) {
             (Some(shell), None) => space::shell_init(&shell),
@@ -62,7 +64,7 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <record-focus|clear-notification|notify|forward-notify|palette|directory-workspace",
+            "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|palette|directory-workspace",
             "|workspace-picker|lazygit|yazi|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
@@ -83,19 +85,29 @@ fn main() {
     }
 }
 
-/// The `pane.focused` hook: record focus recency and clear any notification
-/// delivered for that pane.
-fn record_focus_hook() -> Result<(), String> {
-    let Some(pane_id) = events::PluginEvent::from_environment()
+/// The `pane.focused` coordinator. Each feature that reacts to a focus
+/// change runs independently; one failing must not suppress the others.
+fn pane_focused_hook() -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Some(pane_id) = events::PluginEvent::from_environment()
         .as_ref()
         .and_then(events::PluginEvent::pane_id)
-    else {
+    {
+        if let Err(error) = recency::record(&pane_id) {
+            failures.push(error);
+        }
+        notify::clear_delivered_for_pane(&pane_id);
+    } else {
         eprintln!("[cast] dropped pane.focused event without data.pane_id");
-        return Ok(());
-    };
-    recency::record(&pane_id)?;
-    notify::clear_delivered_for_pane(&pane_id);
-    Ok(())
+    }
+    if let Err(error) = title::sync_title() {
+        failures.push(error);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
+    }
 }
 
 /// Renders the `[cast] <error>` line, colored bold-red when `colorize` is true.
@@ -179,7 +191,8 @@ mod tests {
     fn does_not_hold_for_background_or_noninteractive_commands() {
         assert!(!holds_popup_error("notify"));
         assert!(!holds_popup_error("clear-notification"));
-        assert!(!holds_popup_error("record-focus"));
+        assert!(!holds_popup_error("pane-focused"));
+        assert!(!holds_popup_error("daemon"));
         assert!(!holds_popup_error("sync-space"));
         assert!(!holds_popup_error("sync-title"));
         assert!(!holds_popup_error("sync-spaces"));

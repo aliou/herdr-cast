@@ -106,7 +106,7 @@ The workspace picker opens with `prefix+space` in the local Herdr config.
   name, pane title, status, and agent name.
 - **Panes view:** shows every pane (shells and agents) flat, ordered by the
   most recently focused pane first. Cast records each focused pane from the
-  `pane.focused` event into a bounded recency log in its plugin state
+  `pane.focused` coordinator into a bounded recency log in its plugin state
   directory; stale ids for closed panes are ignored at read time.
 - Press `Tab` to switch views.
 - The picker reopens on the last-used spaces, agents, or panes view.
@@ -200,11 +200,29 @@ plugin hooks as a high-volume event.
 
 ### Terminal window title
 
-Cast sets Herdr's foreground client window title to the focused Space label on
-`workspace.focused`, and refreshes it when that focused Space is renamed.
-Herdr sends this as an OSC title update to the attached terminal client. The
-title is client/window state, not per-workspace state, so Cast reapplies it on
-focus changes rather than storing title state of its own.
+Cast owns the foreground terminal window title for the whole session. The
+title reads `HOSTNAME › SESSION_NAME › terminal_title`, where:
+
+- the hostname appears only when the Herdr server itself was spawned over
+  SSH (interactive ssh or `herdr --remote`; both keep `SSH_CONNECTION` or
+  `SSH_TTY` in the daemon's inherited environment),
+- the session name appears only for named sessions (the default session is
+  hidden),
+- the tail is whatever the focused pane's program last set (for example
+  vim or ssh updating it live).
+
+Absent fragments and their separators drop out, so a local default session
+shows just the program title and a remote named session shows the full
+chain. A server first started outside SSH and later attached to cannot be
+told apart, so it keeps no hostname fragment.
+
+Because Herdr withholds `pane.updated` from plugin hooks, nothing announces
+a title change. A resident `herdr-cast daemon` per session polls the focused
+pane's terminal title and reapplies the composed title when it changes;
+the `pane.focused` coordinator and the startup hook push it immediately and
+re-spawn the daemon if it died. The daemon holds a `flock` keyed by the
+session's socket path in the plugin state directory, exits when the
+session's server goes away, and never races a second copy.
 
 ### Layout palette
 
@@ -220,8 +238,6 @@ The layout palette opens with `prefix+p` in the local Herdr config. It provides:
   focused pane.
 - **Rename current workspace:** sets a custom label for the workspace
   containing the focused pane.
-- **Rename Terminal title for current workspace:** sets the foreground Herdr
-  client window title. Herdr does not store this as per-workspace title state.
 
 Split flipping rejects nested layouts and attempts to restore the original
 layout if the second move fails.
@@ -423,7 +439,7 @@ Herdr's API.
 ## Architecture
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
-  `forward-notify`, `focus`, `record-focus`, `palette`,
+  `forward-notify`, `focus`, `pane-focused`, `daemon`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected

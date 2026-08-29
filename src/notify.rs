@@ -555,7 +555,7 @@ fn notification_lifecycle_lock(
     }
 }
 
-fn stable_hash(value: &str) -> u64 {
+pub(crate) fn stable_hash(value: &str) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in value.bytes() {
         hash ^= u64::from(byte);

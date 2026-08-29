@@ -73,14 +73,21 @@ request/response contract.
 - `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `record-focus`, `notify`,
-  `clear-notification`, `forward-notify`, `focus`, `palette`,
+- `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
+  `clear-notification`, `forward-notify`, `daemon`, `focus`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands. The
   `palette`, `directory-workspace`, `workspace-picker`, `lazygit`, and `yazi`
   commands are interactive popup entrypoints; on a non-zero exit they render a
   bold-red `[cast] ...` line and wait for a keypress before the popup closes.
-  Background hooks and non-interactive commands never wait.
+  Background hooks, the resident daemon, and non-interactive commands never
+  wait. `pane-focused` is the `pane.focused` coordinator: it runs the recency
+  log, notification clearing, and the title refresh independently, so one
+  failing feature never suppresses the others.
+- `src/events.rs`: typed parsing of the `HERDR_PLUGIN_EVENT_JSON` payload
+  shared by every event hook (pane, workspace, and agent fields, with
+  workspace ids accepted in every shape Herdr has emitted). Malformed events
+  fail soft to absent fields.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
@@ -96,9 +103,9 @@ request/response contract.
   in client context.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a two-pane split or move the focused pane to a new tab
-  or a new workspace, and `workspace.rename` / `tab.rename` /
-  `client.window_title.set` to rename the current tab, current workspace, or
-  foreground terminal window title.
+  or a new workspace, and `workspace.rename` / `tab.rename` to rename the
+  current tab or workspace. The window title is owned by `src/title.rs`;
+  nothing here may write it.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
   editing, tree rows, and animated agent-status icons.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
@@ -107,15 +114,24 @@ request/response contract.
   `spaces` (workspace -> pane tree), `agents` (flat agent panes by status),
   and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
 - `src/recency.rs`: bounded move-to-front log of focused pane ids, recorded by
-  the `record-focus` command on `pane.focused` events into the injected state
-  directory. The same hook clears outstanding local macOS notifications for
-  the focused pane. Read at picker open; stale ids for closed panes are
+  the `pane.focused` coordinator into the injected state directory. The
+  same coordinator clears outstanding local macOS notifications for the
+  focused pane. Read at picker open; stale ids for closed panes are
   filtered against `pane.list` and never name a pane.
 - `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
   `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
   `pane.process_info`, and prints the zsh integration that triggers a sync.
   `space::describe` renders those tokens for one-line surfaces such as the
   workspace picker.
+- `src/title.rs`: owns the foreground terminal window title, composed as
+  `HOSTNAME › SESSION_NAME › terminal_title`. The hostname fragment appears
+  only when the server's inherited environment carries `SSH_CONNECTION` or
+  `SSH_TTY`; the session fragment only for named sessions; the tail is the
+  focused pane's `terminal_title_stripped`. `sync-title` pushes the title and
+  ensures a resident `herdr-cast daemon` per session, which polls `pane.list`
+  and reapplies on change (Herdr withholds `pane.updated` from hooks). The
+  daemon singleton is an `flock` on a state-dir lock file keyed by socket
+  path, and the daemon exits after persistent socket loss.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order. When zoxide is absent or has no ranked directories
@@ -244,6 +260,13 @@ runtime invocation.
 - Render Space tokens through `space::describe` everywhere outside the
   sidebar, so the picker and the sidebar cannot drift apart.
 - Use injected context and opaque IDs. Never infer workspace, tab, or pane IDs.
+- The window title belongs to `src/title.rs` alone. No other module may call
+  `client.window_title.set`: an explicit title suppresses Herdr's template,
+  and a second writer would fight the daemon within one poll. Resolve the
+  hostname and session fragments once from the server-inherited environment
+  (`SSH_CONNECTION`/`SSH_TTY` and `HERDR_SESSION`); never derive them from a
+  pane. Keep the daemon one per socket via the state-dir `flock` keyed by
+  socket path, and keep its spawned stdio detached so hook pipes close.
 - In Rust, represent protocol methods and payloads with serializable types,
   report malformed/error responses clearly, and consult `herdr api schema`
   before changing them.

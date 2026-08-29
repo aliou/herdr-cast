@@ -116,16 +116,10 @@ struct WorkspaceReportMetadataParams {
     seq: u64,
 }
 
-#[derive(Serialize)]
-struct ClientWindowTitleSetParams {
-    title: String,
-}
-
 #[derive(Debug, Deserialize)]
 struct WorkspaceInfo {
     workspace_id: String,
     label: String,
-    focused: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -205,22 +199,6 @@ pub fn sync_all() -> Result<(), String> {
         return Ok(());
     }
     Err(failures.join("; "))
-}
-
-/// Set the foreground Herdr client window title to the focused workspace label.
-///
-/// The event may name a workspace that is not focused, such as a background
-/// workspace rename. In that case, leave the foreground terminal title alone.
-pub fn sync_title() -> Result<(), String> {
-    let Some(workspace_id) = current_workspace_id() else {
-        return Ok(());
-    };
-    let client = socket_client()?;
-    let workspace = workspace_info(&client, &workspace_id)?;
-    if !workspace.focused {
-        return Ok(());
-    }
-    set_client_window_title(&client, &workspace.label)
 }
 
 /// Print the shell integration. The snippet points at this exact binary, so a
@@ -586,18 +564,6 @@ fn workspace_label(client: &SocketClient, workspace_id: &str) -> Result<String, 
     workspace_info(client, workspace_id).map(|workspace| workspace.label)
 }
 
-fn set_client_window_title(client: &SocketClient, title: &str) -> Result<(), String> {
-    client
-        .send(
-            "cast:client-window-title-set",
-            "client.window_title.set",
-            ClientWindowTitleSetParams {
-                title: title.to_string(),
-            },
-        )
-        .map(|_| ())
-}
-
 /// Plugin hooks carry the workspace in their event payload; shell hooks only
 /// have the injected pane environment.
 fn current_workspace_id() -> Option<String> {
@@ -700,19 +666,6 @@ mod tests {
                     "pad": null
                 },
                 "seq": 17
-            })
-        );
-    }
-
-    #[test]
-    fn terminal_title_request_matches_the_installed_protocol() {
-        let request = ClientWindowTitleSetParams {
-            title: "project".into(),
-        };
-        assert_eq!(
-            serde_json::to_value(request).unwrap(),
-            serde_json::json!({
-                "title": "project"
             })
         );
     }

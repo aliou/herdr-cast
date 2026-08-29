@@ -44,11 +44,6 @@ struct TabRenameParams {
     label: String,
 }
 
-#[derive(Debug, Clone, Serialize)]
-struct ClientWindowTitleSetParams {
-    title: String,
-}
-
 #[derive(Debug, Clone)]
 struct CurrentLocation {
     workspace_id: String,
@@ -120,7 +115,6 @@ pub fn run() -> Result<(), String> {
         }
         LayoutAction::RenameTab => rename_current_tab(&client, &pane_id),
         LayoutAction::RenameWorkspace => rename_current_workspace(&client, &pane_id),
-        LayoutAction::SetTerminalTitle => set_terminal_title(&client, &pane_id),
     }
 }
 
@@ -282,21 +276,6 @@ fn rename_current_tab(client: &SocketClient, pane_id: &str) -> Result<(), String
         .map(|_| ())
 }
 
-fn set_terminal_title(client: &SocketClient, pane_id: &str) -> Result<(), String> {
-    let location = current_location(client, pane_id)?;
-    let current = workspace_label(client, &location.workspace_id)?;
-    let Some(title) = read_label("Terminal title", &current)? else {
-        return Ok(());
-    };
-    client
-        .send(
-            "cast:client-window-title-set",
-            "client.window_title.set",
-            ClientWindowTitleSetParams { title },
-        )
-        .map(|_| ())
-}
-
 fn move_to_new_workspace(
     client: &SocketClient,
     pane_id: &str,
@@ -431,7 +410,6 @@ enum LayoutAction {
     MoveToNewWorkspace,
     RenameTab,
     RenameWorkspace,
-    SetTerminalTitle,
 }
 
 fn choose_action() -> Result<Option<LayoutAction>, String> {
@@ -471,12 +449,6 @@ fn choose_action() -> Result<Option<LayoutAction>, String> {
                 "Rename current workspace",
                 Some("Set a custom label for the workspace containing the focused pane"),
                 "rename current workspace label",
-            ),
-            Choice::new(
-                LayoutAction::SetTerminalTitle,
-                "Rename Terminal title for current workspace",
-                Some("Set the foreground Herdr client window title; Herdr does not store this per workspace"),
-                "rename terminal title current workspace client window title",
             ),
         ],
     )
@@ -608,20 +580,6 @@ mod tests {
             serde_json::json!({
                 "tab_id": "t1",
                 "label": "new tab"
-            })
-        );
-    }
-
-    #[test]
-    fn terminal_title_request_uses_the_current_protocol_shape() {
-        let params = ClientWindowTitleSetParams {
-            title: "project".into(),
-        };
-
-        assert_eq!(
-            serde_json::to_value(params).unwrap(),
-            serde_json::json!({
-                "title": "project"
             })
         );
     }
