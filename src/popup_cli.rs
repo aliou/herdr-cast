@@ -14,7 +14,7 @@ const SOCKET_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Runs a user-facing CLI inside a Herdr popup pane.
 ///
-/// Stdin, stdout, and stderr are inherited, so a TUI such as lazygit or yazi
+/// Stdin, stdout, and stderr are inherited, so a TUI such as lazygit
 /// renders directly in the popup and keeps its keyboard input. The caller is
 /// an allowlisted popup entrypoint, so a non-zero exit becomes a uniform
 /// `<program> exited with <status>` error that the top-level dispatch renders
@@ -37,7 +37,7 @@ pub fn run(program: &str, mut command: Command) -> Result<(), String> {
 /// The focused pane's working directory, resolved through the Herdr socket.
 ///
 /// Herdr runs plugin commands with the plugin root as cwd, so a popup CLI such
-/// as lazygit or yazi must set its own cwd to this path to open where the user
+/// as lazygit must set its own cwd to this path to open where the user
 /// expects. Used only inside popup entrypoints where the focused pane id and
 /// socket are injected.
 pub fn focused_pane_cwd() -> Result<PathBuf, String> {

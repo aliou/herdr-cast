@@ -106,15 +106,3 @@ placement = "popup"
 width = "90%"
 height = "90%"
 command = ["herdr-cast", "lazygit"]
-
-# Open yazi in the focused pane's working directory. Replaces a bare
-# `command = "yazi"` popup key, which opens in the plugin root rather than the
-# focused pane's directory and cannot surface a failure before the popup closes.
-[[panes]]
-id = "yazi"
-title = "yazi"
-platforms = ["macos", "linux"]
-placement = "popup"
-width = "90%"
-height = "90%"
-command = ["herdr-cast", "yazi"]

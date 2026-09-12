@@ -363,7 +363,7 @@ Example pane bindings. The three fuzzy pickers open through
 `herdr-cast open-popup`, which measures the terminal first and clamps the
 popup to the larger of a percentage of the available area and a fixed minimum,
 so a popup stays usable on a 14" laptop as well as a 27" display. The
-`layout-palette`, `lazygit`, and `yazi` entrypoints use fixed sizes set in
+`layout-palette` and `lazygit` entrypoints use fixed sizes set in
 `herdr-plugin.toml`, so they open through `plugin pane open` directly.
 
 ```toml
@@ -402,18 +402,7 @@ opens lazygit directly when the focused pane sits in (or is) a repository,
 and otherwise fuzzy-picks one from the repositories found up to 3 levels
 below it, instead of lazygit's own no-repository error.
 
-```toml
-[[keys.command]]
-command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint yazi'
-description = "open yazi"
-key = "prefix+y"
-type = "shell"
-```
-
-The `yazi` entrypoint opens yazi in the focused pane's working directory. A
-bare `command = "yazi"` popup would open in the plugin root instead.
-
-Both `lazygit` and `yazi` stream the child CLI's stdin, stdout, and stderr
+The child CLI's stdin, stdout, and stderr stream
 straight into the popup through `src/popup_cli.rs`. When the child exits
 non-zero, the popup prints a bold-red `[cast] <program> exited with <status>`
 line and waits for a keypress before closing, so a failure is never swallowed.
@@ -440,7 +429,7 @@ Herdr's API.
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
   `forward-notify`, `focus`, `pane-focused`, `daemon`, `palette`,
-  `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
+  `directory-workspace`, `workspace-picker`, `lazygit`, `open-popup`,
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
@@ -463,10 +452,9 @@ Herdr's API.
   popup stays usable on small screens.
 - `src/popup_cli.rs` streams a child CLI's stdin, stdout, and stderr into a
   popup and surfaces a non-zero exit as the `[cast] <program> exited with
-  <status>` line. Shared by the `lazygit` and `yazi` entrypoints.
+  <status>` line. Used by the `lazygit` entrypoint.
 - `src/lazygit.rs` opens lazygit in the focused pane's repository, or
   fuzzy-picks one found up to three levels below it.
-- `src/yazi.rs` opens yazi in the focused pane's working directory.
 - `assets/HerdrNotify.app` is the neutral bundled macOS notification
   application; `assets/HerdrNotify-blocked.app` and
   `assets/HerdrNotify-done.app` are the per-status identities (same binary,

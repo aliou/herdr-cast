@@ -75,9 +75,9 @@ request/response contract.
   and manifest features actually used.
 - `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
   `clear-notification`, `forward-notify`, `daemon`, `focus`, `palette`,
-  `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`, `open-popup`,
+  `directory-workspace`, `workspace-picker`, `lazygit`, `open-popup`,
   `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands. The
-  `palette`, `directory-workspace`, `workspace-picker`, `lazygit`, and `yazi`
+  `palette`, `directory-workspace`, `workspace-picker`, and `lazygit`
   commands are interactive popup entrypoints; on a non-zero exit they render a
   bold-red `[cast] ...` line and wait for a keypress before the popup closes.
   Background hooks, the resident daemon, and non-interactive commands never
@@ -145,7 +145,7 @@ request/response contract.
   popups usable on small screens; sizing flags come from the caller's key
   binding rather than the manifest.
 - `src/popup_cli.rs`: runs a child CLI inside a popup, inheriting stdin,
-  stdout, and stderr so a TUI such as lazygit or yazi renders directly in the
+  stdout, and stderr so a TUI such as lazygit renders directly in the
   pane. Resolves the focused pane's cwd through `pane.get`. A non-zero exit
   becomes the `<program> exited with <status>` error that `main.rs` renders
   and waits on. Use only for CLIs whose output belongs in the popup; for CLIs
@@ -154,8 +154,6 @@ request/response contract.
 - `src/lazygit.rs`: `lazygit` entrypoint. Opens lazygit in the focused pane's
   repository, or fuzzy-picks one found up to three levels below it when the
   pane is not inside a repository.
-- `src/yazi.rs`: `yazi` entrypoint. Opens yazi in the focused pane's working
-  directory resolved through `src/popup_cli.rs`.
 - `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve
   its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
   finds it under `assets/`; the Nix package also installs the whole
@@ -273,7 +271,7 @@ runtime invocation.
 - Keep personal policy constants in `src/notify.rs`. Do not add a config file or
   per-setting environment overrides without an explicit request.
 - The wait-on-error hold is an allowlist over interactive popup entrypoints
-  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`, `yazi`) in
+  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`) in
   `main.rs`. Background hooks and non-interactive commands must never wait for
   a keypress. Add a popup entrypoint to the allowlist when it can fail in a
   way the user should read before the popup closes.
