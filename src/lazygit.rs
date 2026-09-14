@@ -19,46 +19,51 @@ pub(crate) const MAX_DEPTH: u32 = 3;
 /// repositories found up to `MAX_DEPTH` levels below it.
 pub fn run() -> Result<(), String> {
     let cwd = popup_cli::focused_pane_cwd()?;
-
-    let repository = match space::repository_root(&cwd) {
-        Some(root) => root,
-        None => {
-            // Open the picker immediately and stream repositories into it as
-            // the scan below finds them, rather than blocking the popup on a
-            // full scan first. A directory tree large or slow enough to
-            // matter (a network mount, a huge monorepo) would otherwise leave
-            // the popup looking hung.
-            let (sender, receiver) = mpsc::channel();
-            let scan_root = cwd.clone();
-            // Cancelled once the picker returns, so an unfinished scan of a
-            // large or slow tree does not keep walking the filesystem for
-            // the whole interactive lazygit session that follows.
-            let cancelled = Arc::new(AtomicBool::new(false));
-            let scan_cancelled = Arc::clone(&cancelled);
-            std::thread::spawn(move || {
-                scan_repositories(&scan_root, MAX_DEPTH, &scan_cancelled, &mut |path| {
-                    let _ = sender.send(repository_choice(&scan_root, path));
-                });
-            });
-            let selection = pick_streaming(
-                Picker {
-                    placeholder: "Search repositories",
-                    empty_message: "No git repository found nearby",
-                    order: None,
-                },
-                receiver,
-            );
-            cancelled.store(true, Ordering::Relaxed);
-            match selection? {
-                Some(path) => path,
-                None => return Ok(()),
-            }
-        }
+    let Some(repository) = resolve_repository(&cwd)? else {
+        return Ok(());
     };
 
     let mut command = Command::new("lazygit");
     command.arg("-p").arg(&repository);
     popup_cli::run("lazygit", command)
+}
+
+/// Resolve the repository a popup entrypoint should open: the repository
+/// containing `directory`, or, when the directory is not inside one, a
+/// fuzzy-picked repository found up to `MAX_DEPTH` levels below it.
+/// `Ok(None)` means the user dismissed the picker.
+pub(crate) fn resolve_repository(directory: &Path) -> Result<Option<PathBuf>, String> {
+    if let Some(root) = space::repository_root(directory) {
+        return Ok(Some(root));
+    }
+
+    // Open the picker immediately and stream repositories into it as
+    // the scan below finds them, rather than blocking the popup on a
+    // full scan first. A directory tree large or slow enough to
+    // matter (a network mount, a huge monorepo) would otherwise leave
+    // the popup looking hung.
+    let (sender, receiver) = mpsc::channel();
+    let scan_root = directory.to_path_buf();
+    // Cancelled once the picker returns, so an unfinished scan of a
+    // large or slow tree does not keep walking the filesystem for
+    // the whole interactive session that follows.
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let scan_cancelled = Arc::clone(&cancelled);
+    std::thread::spawn(move || {
+        scan_repositories(&scan_root, MAX_DEPTH, &scan_cancelled, &mut |path| {
+            let _ = sender.send(repository_choice(&scan_root, path));
+        });
+    });
+    let selection = pick_streaming(
+        Picker {
+            placeholder: "Search repositories",
+            empty_message: "No git repository found nearby",
+            order: None,
+        },
+        receiver,
+    );
+    cancelled.store(true, Ordering::Relaxed);
+    Ok(selection?)
 }
 
 /// Walks 1 to `max_depth` directory levels below `directory`, calling

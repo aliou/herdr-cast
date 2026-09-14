@@ -1,5 +1,6 @@
 mod api;
 mod events;
+mod hunk;
 mod lazygit;
 mod notify;
 mod palette;
@@ -37,6 +38,8 @@ fn main() {
         }
         Some("workspace-picker") if arguments.next().is_none() => workspace::focus_existing(),
         Some("lazygit") if arguments.next().is_none() => lazygit::run(),
+        Some("hunk") if arguments.next().is_none() => hunk::run(),
+        Some("hunk-log") if arguments.next().is_none() => hunk::run_log(),
         Some("sync-space") => match (arguments.next().as_deref(), arguments.next()) {
             (None, _) => space::sync(false),
             (Some("--await-remote"), None) => space::sync(true),
@@ -63,7 +66,7 @@ fn main() {
         }
         _ => Err(concat!(
             "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|palette|directory-workspace",
-            "|workspace-picker|lazygit|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
+            "|workspace-picker|lazygit|hunk|hunk-log|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
     };
@@ -127,7 +130,7 @@ fn format_error_line(error: &str, colorize: bool) -> String {
 fn holds_popup_error(command: &str) -> bool {
     matches!(
         command,
-        "palette" | "directory-workspace" | "workspace-picker" | "lazygit"
+        "palette" | "directory-workspace" | "workspace-picker" | "lazygit" | "hunk" | "hunk-log"
     )
 }
 
@@ -182,6 +185,8 @@ mod tests {
         assert!(holds_popup_error("directory-workspace"));
         assert!(holds_popup_error("workspace-picker"));
         assert!(holds_popup_error("lazygit"));
+        assert!(holds_popup_error("hunk"));
+        assert!(holds_popup_error("hunk-log"));
     }
 
     #[test]

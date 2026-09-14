@@ -40,6 +40,18 @@ repositories found below it when the pane is not inside one.
 
 [![lazygit](https://assets.aliou.me/github/aliou/herdr-cast/lazygit.gif)](https://assets.aliou.me/github/aliou/herdr-cast/lazygit.mp4)
 
+### hunk
+
+Review the focused pane's repository with [hunk](https://github.com/modem-dev/hunk):
+`prefix+g` opens the working-tree review (`hunk diff --watch`), which shows the
+whole changeset including untracked files and reloads while agents edit;
+`prefix+shift+g` opens `hunk log` for commit navigation. Both reuse lazygit's
+repository resolution and fuzzy picker.
+
+Notes written inside the review with `c` survive the popup: a generated hunk
+extension dumps them to a temp file while the review runs, and when hunk quits,
+the path lands on the clipboard with a Herdr toast, ready to hand to an agent.
+
 ## Features
 
 ### Agent notifications
@@ -363,8 +375,8 @@ Example pane bindings. The three fuzzy pickers open through
 `herdr-cast open-popup`, which measures the terminal first and clamps the
 popup to the larger of a percentage of the available area and a fixed minimum,
 so a popup stays usable on a 14" laptop as well as a 27" display. The
-`layout-palette` and `lazygit` entrypoints use fixed sizes set in
-`herdr-plugin.toml`, so they open through `plugin pane open` directly.
+`layout-palette` entrypoint uses fixed sizes set in `herdr-plugin.toml`, so it
+opens through `plugin pane open` directly.
 
 ```toml
 [[keys.command]]
@@ -386,9 +398,15 @@ key = "prefix+space"
 type = "shell"
 
 [[keys.command]]
-command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint lazygit'
-description = "open lazygit"
+command = 'herdr-cast open-popup --entrypoint hunk --pct-width 90 --pct-height 90 --min-width 70 --min-height 22'
+description = "review changes with hunk"
 key = "prefix+g"
+type = "shell"
+
+[[keys.command]]
+command = 'herdr-cast open-popup --entrypoint hunk-log --pct-width 90 --pct-height 90 --min-width 70 --min-height 22'
+description = "browse commits with hunk"
+key = "prefix+shift+g"
 type = "shell"
 ```
 
@@ -400,7 +418,19 @@ flags are `--entrypoint`, `--min-width`, `--min-height`, `--pct-width`, and
 The `lazygit` entrypoint replaces a bare `command = "lazygit"` popup key. It
 opens lazygit directly when the focused pane sits in (or is) a repository,
 and otherwise fuzzy-picks one from the repositories found up to 3 levels
-below it, instead of lazygit's own no-repository error.
+below it, instead of lazygit's own no-repository error. The `hunk` and
+`hunk-log` entrypoints resolve their repository the same way. Hunk reads the
+repository from its working directory and has no repository flag, so both
+run at the resolved repository root.
+
+The `hunk` entrypoint also keeps review notes out of the popup's lifetime. A
+generated hunk extension (`src/hunk-review-dump.mjs`) dumps the review's user
+notes through the public `hunk session comment list --json` CLI on every note
+change and once more at hunk's shutdown event, which runs inside the quit
+flow before the session unregisters. When hunk exits, the dump path is
+copied to the clipboard and Herdr is asked to toast about it, so notes
+written with `c` can be handed to an agent after the popup is gone. With no
+notes, neither happens.
 
 The child CLI's stdin, stdout, and stderr stream
 straight into the popup through `src/popup_cli.rs`. When the child exits
@@ -429,8 +459,9 @@ Herdr's API.
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
   `forward-notify`, `focus`, `pane-focused`, `daemon`, `palette`,
-  `directory-workspace`, `workspace-picker`, `lazygit`, `open-popup`,
-  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands.
+  `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
+  `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
+  commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
 - `src/notify.rs` owns notification policy, state, the shared two-line
@@ -452,9 +483,14 @@ Herdr's API.
   popup stays usable on small screens.
 - `src/popup_cli.rs` streams a child CLI's stdin, stdout, and stderr into a
   popup and surfaces a non-zero exit as the `[cast] <program> exited with
-  <status>` line. Used by the `lazygit` entrypoint.
+  <status>` line. Used by the `lazygit` and `hunk` entrypoints.
 - `src/lazygit.rs` opens lazygit in the focused pane's repository, or
-  fuzzy-picks one found up to three levels below it.
+  fuzzy-picks one found up to three levels below it, and exposes the shared
+  repository resolution the hunk entrypoints reuse.
+- `src/hunk.rs` opens hunk's working-tree review (`hunk diff --watch`) and
+  history browser (`hunk log`) at the resolved repository root, and keeps
+  review notes after the popup closes through a generated hunk extension,
+  a clipboard copy of the dump path, and a Herdr toast.
 - `assets/HerdrNotify.app` is the neutral bundled macOS notification
   application; `assets/HerdrNotify-blocked.app` and
   `assets/HerdrNotify-done.app` are the per-status identities (same binary,

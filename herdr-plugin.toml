@@ -106,3 +106,26 @@ placement = "popup"
 width = "90%"
 height = "90%"
 command = ["herdr-cast", "lazygit"]
+
+# Review the focused pane's repository with hunk: `hunk` reviews the whole
+# working-tree changeset (including untracked files) and reloads it while
+# agents edit; `hunk-log` browses commit history and reviews a selected
+# commit or range. Both reuse lazygit's repository resolution, including its
+# fuzzy picker outside a repository.
+[[panes]]
+id = "hunk"
+title = "hunk diff"
+platforms = ["macos", "linux"]
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["herdr-cast", "hunk"]
+
+[[panes]]
+id = "hunk-log"
+title = "hunk log"
+platforms = ["macos", "linux"]
+placement = "popup"
+width = "90%"
+height = "90%"
+command = ["herdr-cast", "hunk-log"]

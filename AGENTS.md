@@ -75,11 +75,12 @@ request/response contract.
   and manifest features actually used.
 - `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
   `clear-notification`, `forward-notify`, `daemon`, `focus`, `palette`,
-  `directory-workspace`, `workspace-picker`, `lazygit`, `open-popup`,
-  `sync-space`, `sync-title`, `sync-spaces`, and `shell-init` commands. The
-  `palette`, `directory-workspace`, `workspace-picker`, and `lazygit`
-  commands are interactive popup entrypoints; on a non-zero exit they render a
-  bold-red `[cast] ...` line and wait for a keypress before the popup closes.
+  `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
+  `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
+  commands. The `palette`, `directory-workspace`, `workspace-picker`,
+  `lazygit`, `hunk`, and `hunk-log` commands are interactive popup
+  entrypoints; on a non-zero exit they render a bold-red `[cast] ...` line and
+  wait for a keypress before the popup closes.
   Background hooks, the resident daemon, and non-interactive commands never
   wait. `pane-focused` is the `pane.focused` coordinator: it runs the recency
   log, notification clearing, and the title refresh independently, so one
@@ -153,7 +154,21 @@ request/response contract.
   `Command::output()` directly.
 - `src/lazygit.rs`: `lazygit` entrypoint. Opens lazygit in the focused pane's
   repository, or fuzzy-picks one found up to three levels below it when the
-  pane is not inside a repository.
+  pane is not inside a repository. Its `resolve_repository` is the shared
+  repository resolution other popup entrypoints reuse.
+- `src/hunk.rs`: `hunk` and `hunk-log` entrypoints. `hunk` runs
+  `hunk diff --watch` against the focused pane's repository (the whole
+  working-tree changeset including untracked files, reloaded while agents
+  edit); `hunk-log` runs `hunk log` for commit navigation. Both reuse
+  `lazygit`'s repository resolution and run hunk at the repository root,
+  because hunk has no repository flag. A generated hunk extension
+  (`src/hunk-review-dump.mjs`, written into the plugin state directory and
+  loaded through `--extension`) dumps the review's user notes to a temp file
+  on every note change and at hunk's shutdown event. When hunk exits, the
+  dump path is copied to the clipboard (pbcopy/wl-copy/xclip, best-effort)
+  and Herdr is asked to toast about it through `notification.show` with
+  `sound = "none"`; with no notes, neither happens. The dump is the public
+  `hunk session comment list --json` output, so notes survive the popup.
 - `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve
   its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
   finds it under `assets/`; the Nix package also installs the whole
@@ -271,10 +286,10 @@ runtime invocation.
 - Keep personal policy constants in `src/notify.rs`. Do not add a config file or
   per-setting environment overrides without an explicit request.
 - The wait-on-error hold is an allowlist over interactive popup entrypoints
-  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`) in
-  `main.rs`. Background hooks and non-interactive commands must never wait for
-  a keypress. Add a popup entrypoint to the allowlist when it can fail in a
-  way the user should read before the popup closes.
+  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`,
+  `hunk-log`) in `main.rs`. Background hooks and non-interactive commands
+  must never wait for a keypress. Add a popup entrypoint to the allowlist
+  when it can fail in a way the user should read before the popup closes.
 - Add dependencies only when the Rust standard library and current crates
   cannot cover the need.
 
