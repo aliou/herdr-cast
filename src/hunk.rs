@@ -302,7 +302,7 @@ mod tests {
         let dump = prepare_dump_in(&state).expect("dump paths");
         assert_eq!(dump.extension.parent(), Some(state.as_path()));
         let written = fs::read_to_string(&dump.extension).expect("extension contents");
-        assert!(written.contains("note_changed"));
+        assert!(written.contains("note_created"));
         assert!(written.contains("shutdown"));
         assert_eq!(dump.notes.parent(), Some(std::env::temp_dir().as_path()));
         assert!(dump

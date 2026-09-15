@@ -5,9 +5,17 @@
 // Dumps the review's user notes to $HUNK_REVIEW_DUMP whenever one changes and
 // once more at shutdown — which hunk runs inside its quit flow, before the
 // session unregisters — so notes written with `c` survive the session
-// process. The dump is the public `hunk session comment list --json` output;
-// the daemon resolves note file keys to real paths, so this file depends on
-// no review internals.
+// process.
+//
+// The dump mirrors `hunk session comment list --type user --json`: a
+// `{ "comments": [...] }` object. `hunk diff` persists user notes through its
+// session daemon and drove this dump from the daemon CLI. In `hunk log` the
+// same query returns nothing at shutdown, because the log route keeps user
+// notes in memory and never registers them with the daemon. To keep both
+// modes in lockstep, we collect notes from the extension events and write
+// the dump from that in-memory copy. Ctrl-S fires `note_created` with a
+// saved (`draft: false`) note; typing emits `note_edited` drafts with the
+// in-progress body. The dump keeps only saved notes.
 import { writeFileSync } from "node:fs";
 
 const target = process.env.HUNK_REVIEW_DUMP;
@@ -15,27 +23,25 @@ const target = process.env.HUNK_REVIEW_DUMP;
 export default function register(hunk) {
   if (!target) return;
 
+  const notes = new Map();
+
+  const store = ({ note }) => {
+    notes.set(note.id, note);
+    dump();
+  };
+
   const dump = () => {
     try {
-      const result = Bun.spawnSync([
-        "hunk",
-        "session",
-        "comment",
-        "list",
-        "--repo",
-        process.cwd(),
-        "--type",
-        "user",
-        "--json",
-      ]);
-      if (result.exitCode === 0) {
-        writeFileSync(target, result.stdout.toString());
-      }
+      const comments = [...notes.values()].filter(
+        (n) => !n.draft && (n.body ?? "").trim().length > 0,
+      );
+      writeFileSync(target, JSON.stringify({ comments }, null, 2));
     } catch {
       // The review must never fail because its dump could not be written.
     }
   };
 
-  hunk.on("note_changed", dump);
+  hunk.on("note_created", store);
+  hunk.on("note_edited", store);
   hunk.on("shutdown", dump);
 }
