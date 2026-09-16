@@ -2,6 +2,7 @@ mod api;
 mod events;
 mod hunk;
 mod lazygit;
+mod move_wizard;
 mod notify;
 mod palette;
 mod picker;

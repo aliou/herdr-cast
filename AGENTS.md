@@ -103,12 +103,43 @@ request/response contract.
   canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it runs
   in client context.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
-  `pane.move` to flip a two-pane split or move the focused pane to a new tab
-  or a new workspace, and `workspace.rename` / `tab.rename` to rename the
-  current tab or workspace. The window title is owned by `src/title.rs`;
-  nothing here may write it.
+  `pane.move` to flip a two-pane split, owns the shared `pane.move`
+  protocol types and the current-location lookup, dispatches "Move pane…"
+  to `src/move_wizard.rs`, and renames the current tab or workspace with
+  `workspace.rename` / `tab.rename`. The window title is owned by
+  `src/title.rs`; nothing here may write it.
+- `src/move_wizard.rs`: multi-step move-pane wizard. Keeps an explicit
+  stack of picker levels (destination kind → fuzzy workspace → tab tree →
+  split direction, or → session picker) driven by `picker::pick_nav`:
+  Escape clears the query, then pops one level; Esc on the first level
+  returns `WizardExit::Back` so the palette re-opens its root action list;
+  Ctrl-C aborts from any depth. Fetches `workspace.list`, `tab.list`, the
+  pane's current location, its `pane.get` details (cwd, title, agent
+  session), and `herdr session list --json` once and reuses that snapshot
+  across levels. Picking a workspace row moves the pane into a new tab
+  there; picking a tab row always asks for the split direction, because the
+  `pane.move` `tab` destination requires `split`. Every same-session move
+  maps to one `pane.move` followed by an explicit `pane.focus` on the
+  resulting pane id — the popup closes on top of the move, and the
+  post-move focus is what lands the user on the moved pane instead of back
+  on the pane that spawned the popup. "Move pane to another session…"
+  connects to the target session's socket (`SocketClient::new` with its
+  path), recreates the pane there via `workspace.create` (same label and
+  cwd, the response's `root_pane`), `pane.rename`, and `agent.start` with
+  the per-agent resume flags that mirror Herdr's own `agent_resume::plan`
+  (re-check that table when upgrading Herdr), then closes the source pane
+  and ends with a local `notification.show` toast; focus cannot follow
+  across sessions. "Move workspace to another session…" applies the same
+  transplant to the whole current workspace: fresh `tab.list` + `pane.list`
+  at execution time, each tab's layout replayed from its `layout.export`
+  tree (`plan_replay` turns it into ordered `pane.split` steps with the
+  exported ratios), a coverage guard that aborts if any listed pane never
+  got recreated, and `workspace.close` only after every pane was moved. A
+  failure before the close keeps the source pane or workspace.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
-  editing, tree rows, and animated agent-status icons.
+  editing, tree rows, animated agent-status icons, and `pick_nav`, the
+  wizard-level variant whose Escape means "clear the query, then go back
+  one level" while Ctrl-C cancels outright.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
   pane focus through `workspace.create`, `workspace.list`, `pane.list`,
   `workspace.focus`, and `pane.focus`. The workspace picker has three views:

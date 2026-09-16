@@ -457,14 +457,43 @@ impl PickerState {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
 enum InputOutcome {
     Continue,
     Select(usize),
+    Back,
     Cancel,
 }
 
+/// Result of a wizard-level picker ([`pick_nav`]): Enter selects a row, Esc
+/// backs out of the level, Ctrl-C cancels outright.
+#[derive(Debug)]
+pub enum PickOutcome<T> {
+    Selected(T),
+    Back,
+    Cancel,
+}
+
+impl<T> PickOutcome<T> {
+    fn selection(self) -> Option<T> {
+        match self {
+            PickOutcome::Selected(value) => Some(value),
+            PickOutcome::Back | PickOutcome::Cancel => None,
+        }
+    }
+}
+
 pub fn pick<T>(picker: Picker<'_>, choices: Vec<Choice<T>>) -> Result<Option<T>, String> {
-    pick_inner(picker, choices, |_| None, None, |_| None).map(|(selection, _)| selection)
+    pick_inner(picker, choices, |_| None, None, |_| None, false)
+        .map(|(outcome, _)| outcome.selection())
+}
+
+/// A picker level for multi-step wizards, sharing every control with
+/// [`pick`] except Esc: with a query typed, Esc clears the query; with an
+/// empty query, Esc returns [`PickOutcome::Back`] instead of cancelling, so
+/// the caller can pop one level of its wizard stack. Ctrl-C always cancels.
+pub fn pick_nav<T>(picker: Picker<'_>, choices: Vec<Choice<T>>) -> Result<PickOutcome<T>, String> {
+    pick_inner(picker, choices, |_| None, None, |_| None, true).map(|(outcome, _)| outcome)
 }
 
 pub fn pick_with_detail<T, F>(
@@ -475,7 +504,8 @@ pub fn pick_with_detail<T, F>(
 where
     F: FnMut(&T) -> Option<String>,
 {
-    pick_inner(picker, choices, detail_loader, None, |_| None)
+    pick_inner(picker, choices, detail_loader, None, |_| None, false)
+        .map(|(outcome, view)| (outcome.selection(), view))
 }
 
 pub fn pick_with_detail_and_query_choice<T, F, Q>(
@@ -488,7 +518,8 @@ where
     F: FnMut(&T) -> Option<String>,
     Q: FnMut(&str) -> Option<Choice<T>>,
 {
-    pick_inner(picker, choices, detail_loader, None, query_choice)
+    pick_inner(picker, choices, detail_loader, None, query_choice, false)
+        .map(|(outcome, view)| (outcome.selection(), view))
 }
 
 /// Opens the picker immediately with no choices, appending each choice as it
@@ -501,8 +532,15 @@ pub fn pick_streaming<T>(
     picker: Picker<'_>,
     receiver: Receiver<Choice<T>>,
 ) -> Result<Option<T>, String> {
-    pick_inner(picker, Vec::new(), |_| None, Some(receiver), |_| None)
-        .map(|(selection, _)| selection)
+    pick_inner(
+        picker,
+        Vec::new(),
+        |_| None,
+        Some(receiver),
+        |_| None,
+        false,
+    )
+    .map(|(outcome, _)| outcome.selection())
 }
 
 fn pick_inner<T, F, Q>(
@@ -511,7 +549,8 @@ fn pick_inner<T, F, Q>(
     mut detail_loader: F,
     refill: Option<Receiver<Choice<T>>>,
     mut query_choice: Q,
-) -> Result<(Option<T>, usize), String>
+    esc_back: bool,
+) -> Result<(PickOutcome<T>, usize), String>
 where
     F: FnMut(&T) -> Option<String>,
     Q: FnMut(&str) -> Option<Choice<T>>,
@@ -593,7 +632,7 @@ where
         let event =
             event::read().map_err(|error| format!("failed to read picker input: {error}"))?;
         let previous_query = state.query.clone();
-        match handle_event(event, &mut state, &choices, order_view_count) {
+        match handle_event(event, &mut state, &choices, order_view_count, esc_back) {
             InputOutcome::Continue => {
                 if state.query != previous_query {
                     details_loaded.clear();
@@ -605,21 +644,27 @@ where
                     );
                 }
             }
-            InputOutcome::Select(index) => break Some(index),
-            InputOutcome::Cancel => break None,
+            outcome @ (InputOutcome::Select(_) | InputOutcome::Back | InputOutcome::Cancel) => {
+                break outcome;
+            }
         }
     };
 
     session.restore()?;
     let view = state.view;
-    let selection = outcome.map(|index| {
-        choices
-            .into_iter()
-            .nth(index)
-            .expect("selected index is valid")
-            .value
-    });
-    Ok((selection, view))
+    let outcome = match outcome {
+        InputOutcome::Select(index) => PickOutcome::Selected(
+            choices
+                .into_iter()
+                .nth(index)
+                .expect("selected index is valid")
+                .value,
+        ),
+        InputOutcome::Back => PickOutcome::Back,
+        InputOutcome::Cancel => PickOutcome::Cancel,
+        InputOutcome::Continue => unreachable!("loop only exits on select/back/cancel"),
+    };
+    Ok((outcome, view))
 }
 
 fn sync_query_choice<T, Q>(
@@ -646,6 +691,7 @@ fn handle_event<T>(
     state: &mut PickerState,
     choices: &[Choice<T>],
     order_view_count: usize,
+    esc_back: bool,
 ) -> InputOutcome {
     let Event::Key(key) = event else {
         return InputOutcome::Continue;
@@ -657,8 +703,21 @@ fn handle_event<T>(
     match key {
         KeyEvent {
             code: KeyCode::Esc, ..
+        } => {
+            if esc_back && !state.query.is_empty() {
+                // First Esc discards the filter so the full level is visible
+                // again; Esc on an already-clear query backs out of the level.
+                state.query.clear();
+                state.cursor = 0;
+                state.update_matches(choices);
+                InputOutcome::Continue
+            } else if esc_back {
+                InputOutcome::Back
+            } else {
+                InputOutcome::Cancel
+            }
         }
-        | KeyEvent {
+        KeyEvent {
             code: KeyCode::Char('c'),
             modifiers: KeyModifiers::CONTROL,
             ..
@@ -1509,6 +1568,59 @@ mod tests {
         state.query.clear();
         state.update_matches(&choices);
         assert_eq!(state.matches, vec![0, 1]);
+    }
+
+    #[test]
+    fn esc_cancels_outside_nav_mode() {
+        let choices = choices();
+        let mut state = PickerState::new(&choices);
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            handle_event(esc, &mut state, &choices, 0, false),
+            InputOutcome::Cancel
+        );
+
+        state.query = "mo".into();
+        state.cursor = state.query.len();
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            handle_event(esc, &mut state, &choices, 0, false),
+            InputOutcome::Cancel
+        );
+        assert_eq!(state.query, "mo");
+    }
+
+    #[test]
+    fn nav_mode_esc_clears_the_query_then_backs_out() {
+        let choices = choices();
+        let mut state = PickerState::new(&choices);
+        state.query = "mo".into();
+        state.cursor = state.query.len();
+
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            handle_event(esc, &mut state, &choices, 0, true),
+            InputOutcome::Continue
+        );
+        assert!(state.query.is_empty());
+        assert_eq!(state.cursor, 0);
+
+        let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert_eq!(
+            handle_event(esc, &mut state, &choices, 0, true),
+            InputOutcome::Back
+        );
+    }
+
+    #[test]
+    fn ctrl_c_cancels_from_nav_mode_too() {
+        let choices = choices();
+        let mut state = PickerState::new(&choices);
+        let ctrl_c = Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(
+            handle_event(ctrl_c, &mut state, &choices, 0, true),
+            InputOutcome::Cancel
+        );
     }
 
     #[test]

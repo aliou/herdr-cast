@@ -240,12 +240,27 @@ session's server goes away, and never races a second copy.
 
 The layout palette opens with `prefix+p` in the local Herdr config. It provides:
 
+- **Move pane…:** a multi-step wizard. First pick the destination kind
+  (new tab here, choose workspace or tab…, new workspace). "Choose workspace
+  or tab…" opens a fuzzy workspace → tab tree: Enter on a workspace moves
+  the pane into a new tab there; Enter on a tab asks for the split direction
+  (right or below, which the Herdr protocol requires) and moves the pane
+  into that tab. Escape clears the filter, then backs up one level (back to
+  the palette from the first level); Ctrl-C aborts the wizard from any
+  depth. Focus always follows the moved pane to its new location.
+  "Move pane to another session…" (only shown when other Herdr sessions are
+  running) picks a target session and recreates the pane there: a new
+  workspace with the same label, a pane with the same name and cwd, and the
+  agent resumed from its reported session (`claude --resume`, `pi --session`,
+  …). Once the recreation succeeds the original pane closes, and a toast
+  confirms where it landed; a failed move leaves the original untouched.
+  "Move workspace to another session…" does the same for the whole current
+  workspace: every tab's split layout is replayed (`layout.export` →
+  `workspace.create` / `tab.create` / `pane.split` with the exported
+  ratios), every pane keeps its name and resumed agent, and the source
+  workspace closes only after every pane was recreated.
 - **Flip split direction:** toggles a two-pane tab between side-by-side and
   stacked while preserving the split ratio.
-- **Move pane to new tab:** moves the focused pane into a new tab in the
-  current workspace and focuses it.
-- **Move pane to new workspace:** detaches the focused pane, creates a
-  workspace, moves the pane there, and focuses it.
 - **Rename current tab:** sets a custom label for the tab containing the
   focused pane.
 - **Rename current workspace:** sets a custom label for the workspace
@@ -375,12 +390,12 @@ Example pane bindings. The three fuzzy pickers open through
 `herdr-cast open-popup`, which measures the terminal first and clamps the
 popup to the larger of a percentage of the available area and a fixed minimum,
 so a popup stays usable on a 14" laptop as well as a 27" display. The
-`layout-palette` entrypoint uses fixed sizes set in `herdr-plugin.toml`, so it
-opens through `plugin pane open` directly.
+`layout-palette` sizes in `herdr-plugin.toml` are only a fallback for a bare
+`plugin pane open`.
 
 ```toml
 [[keys.command]]
-command = '"${HERDR_BIN_PATH:-herdr}" plugin pane open --plugin ad.cast --entrypoint layout-palette'
+command = 'herdr-cast open-popup --entrypoint layout-palette --pct-width 40 --pct-height 40 --min-width 72 --min-height 24'
 description = "open layout command palette"
 key = "prefix+p"
 type = "shell"

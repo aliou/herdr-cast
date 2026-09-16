@@ -60,13 +60,17 @@ command = ["herdr-cast", "clear-notification"]
 # the workspace label, so it needs no workspace event subscriptions.
 
 # A searchable popup palette for layout operations on the focused pane.
+# "Move pane…" descends into a multi-step wizard (destination kind, fuzzy
+# workspace/tab tree, split direction), so the popup is taller than the old
+# flat action list needed. Percentages only size a bare `plugin.pane.open`;
+# the keybinding opens through `herdr-cast open-popup` with a min cell size.
 [[panes]]
 id = "layout-palette"
 title = "Layout palette"
 platforms = ["macos", "linux"]
 placement = "popup"
-width = 44
-height = 10
+width = "40%"
+height = "40%"
 command = ["herdr-cast", "palette"]
 
 # Fuzzy-select a zoxide-ranked directory and create a workspace there.

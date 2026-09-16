@@ -18,8 +18,8 @@ struct PaneMoveParams {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct PaneTargetParams {
-    pane_id: String,
+pub(crate) struct PaneTargetParams {
+    pub pane_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -45,14 +45,14 @@ struct TabRenameParams {
 }
 
 #[derive(Debug, Clone)]
-struct CurrentLocation {
-    workspace_id: String,
-    tab_id: String,
+pub(crate) struct CurrentLocation {
+    pub(crate) workspace_id: String,
+    pub(crate) tab_id: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum PaneMoveDestination {
+pub(crate) enum PaneMoveDestination {
     Tab {
         tab_id: String,
         target_pane_id: Option<String>,
@@ -71,21 +71,21 @@ enum PaneMoveDestination {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum SplitDirection {
+pub(crate) enum SplitDirection {
     Right,
     Down,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-enum Direction {
+pub(crate) enum Direction {
     Right,
     Down,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
-enum LayoutNode {
+pub(crate) enum LayoutNode {
     Pane {
         pane_id: Option<String>,
     },
@@ -97,24 +97,51 @@ enum LayoutNode {
     },
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct TabLayoutExportParams {
+    tab_id: String,
+}
+
+/// Exported layout tree of one tab; the move wizard replays it pane by pane
+/// in another session.
+pub(crate) fn layout_export_tab(client: &SocketClient, tab_id: &str) -> Result<LayoutNode, String> {
+    let response = client.send(
+        "cast:layout-export-tab",
+        "layout.export",
+        TabLayoutExportParams {
+            tab_id: tab_id.to_owned(),
+        },
+    )?;
+    serde_json::from_value(
+        response
+            .pointer("/result/layout/root")
+            .cloned()
+            .ok_or_else(|| "layout.export missing root".to_string())?,
+    )
+    .map_err(|error| format!("failed to parse layout root: {error}"))
+}
+
 pub fn run() -> Result<(), String> {
     let pane_id = focused_pane_id().ok_or_else(|| "focused pane not available".to_string())?;
     let socket =
         std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())?;
     let client = SocketClient::new(socket);
 
-    let Some(action) = choose_action()? else {
-        return Ok(());
-    };
-
-    match action {
-        LayoutAction::FlipSplit => flip_action(&client, &pane_id),
-        LayoutAction::MoveToNewTab => move_to_new_tab(&client, &pane_id).map(|_| ()),
-        LayoutAction::MoveToNewWorkspace => {
-            move_to_new_workspace(&client, &pane_id, true).map(|_| ())
+    loop {
+        let Some(action) = choose_action()? else {
+            return Ok(());
+        };
+        match action {
+            LayoutAction::MovePane => match crate::move_wizard::run(&client, &pane_id)? {
+                // Esc on the wizard's first level re-opens this root palette
+                // instead of closing the popup.
+                crate::move_wizard::WizardExit::Back => continue,
+                crate::move_wizard::WizardExit::Done => return Ok(()),
+            },
+            LayoutAction::FlipSplit => return flip_action(&client, &pane_id),
+            LayoutAction::RenameTab => return rename_current_tab(&client, &pane_id),
+            LayoutAction::RenameWorkspace => return rename_current_workspace(&client, &pane_id),
         }
-        LayoutAction::RenameTab => rename_current_tab(&client, &pane_id),
-        LayoutAction::RenameWorkspace => rename_current_workspace(&client, &pane_id),
     }
 }
 
@@ -144,7 +171,7 @@ fn layout_export(client: &SocketClient, pane_id: &str) -> Result<Value, String> 
     )
 }
 
-fn pane_move(
+pub(crate) fn pane_move(
     client: &SocketClient,
     pane_id: &str,
     destination: PaneMoveDestination,
@@ -166,7 +193,10 @@ fn pane_move(
         .ok_or_else(|| "pane.move missing resulting pane id".to_string())
 }
 
-fn current_location(client: &SocketClient, pane_id: &str) -> Result<CurrentLocation, String> {
+pub(crate) fn current_location(
+    client: &SocketClient,
+    pane_id: &str,
+) -> Result<CurrentLocation, String> {
     let response = client.send(
         "cast:pane-get",
         "pane.get",
@@ -292,18 +322,6 @@ fn move_to_new_workspace(
     )
 }
 
-fn move_to_new_tab(client: &SocketClient, pane_id: &str) -> Result<String, String> {
-    pane_move(
-        client,
-        pane_id,
-        PaneMoveDestination::NewTab {
-            label: None,
-            workspace_id: None,
-        },
-        true,
-    )
-}
-
 struct FlipPlan {
     stationary_pane_id: String,
     moved_pane_id: String,
@@ -405,9 +423,8 @@ fn flip_action(client: &SocketClient, pane_id: &str) -> Result<(), String> {
 
 #[derive(Clone, Copy)]
 enum LayoutAction {
+    MovePane,
     FlipSplit,
-    MoveToNewTab,
-    MoveToNewWorkspace,
     RenameTab,
     RenameWorkspace,
 }
@@ -421,33 +438,27 @@ fn choose_action() -> Result<Option<LayoutAction>, String> {
         },
         vec![
             Choice::new(
+                LayoutAction::MovePane,
+                "Move pane…",
+                None::<String>,
+                "move pane tab workspace wizard split",
+            ),
+            Choice::new(
                 LayoutAction::FlipSplit,
                 "Flip split direction",
-                Some("Toggle a two-pane tab between side-by-side and stacked"),
+                None::<String>,
                 "flip split direction side by side stacked",
-            ),
-            Choice::new(
-                LayoutAction::MoveToNewTab,
-                "Move pane to new tab",
-                Some("Move the selected pane into a new tab in the current workspace"),
-                "move pane new tab current workspace",
-            ),
-            Choice::new(
-                LayoutAction::MoveToNewWorkspace,
-                "Move pane to new workspace",
-                Some("Detach and focus the selected pane in a new workspace"),
-                "move pane detach new workspace",
             ),
             Choice::new(
                 LayoutAction::RenameTab,
                 "Rename current tab",
-                Some("Set a custom label for the tab containing the focused pane"),
+                None::<String>,
                 "rename current tab label",
             ),
             Choice::new(
                 LayoutAction::RenameWorkspace,
                 "Rename current workspace",
-                Some("Set a custom label for the workspace containing the focused pane"),
+                None::<String>,
                 "rename current workspace label",
             ),
         ],
