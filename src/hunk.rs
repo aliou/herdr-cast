@@ -70,7 +70,15 @@ fn resolve() -> Result<Option<PathBuf>, String> {
 /// flag, so the review runs at the repository root.
 fn review_command(repository: &Path, dump: Option<&DumpPaths>) -> Command {
     let mut command = Command::new("hunk");
-    command.arg("diff").arg("--watch").current_dir(repository);
+    command
+        .arg("diff")
+        .arg("--watch")
+        // Unified has one one line per change, which stays readable when a
+        // side-by-side column wraps on narrow panes.
+        .arg("--mode")
+        .arg("unified")
+        .arg("--wrap")
+        .current_dir(repository);
     attach_dump(&mut command, dump);
     command
 }
@@ -242,7 +250,7 @@ mod tests {
         let command = review_command(Path::new("/repo"), None);
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
-            vec!["diff", "--watch"]
+            vec!["diff", "--watch", "--mode", "unified", "--wrap"]
         );
         assert_eq!(command.get_current_dir(), Some(Path::new("/repo")));
         assert_eq!(command.get_envs().count(), 0);
@@ -260,6 +268,9 @@ mod tests {
             vec![
                 "diff",
                 "--watch",
+                "--mode",
+                "unified",
+                "--wrap",
                 "--extension",
                 "/state/hunk-review-dump.mjs"
             ]
