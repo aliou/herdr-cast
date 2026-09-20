@@ -18,16 +18,48 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-const BACKGROUND: Color = Color::Rgb(0x15, 0x15, 0x15);
-const FOREGROUND: Color = Color::Rgb(0xe8, 0xe8, 0xd3);
-const ACCENT: Color = Color::Rgb(0x8f, 0xbf, 0xdc);
-const SELECTION: Color = Color::Rgb(0x40, 0x40, 0x40);
-const MUTED: Color = Color::Rgb(0x60, 0x59, 0x58);
-const DISABLED: Color = Color::Rgb(0x88, 0x88, 0x88);
-const RED: Color = Color::Rgb(0xd7, 0x45, 0x45);
-const GREEN: Color = Color::Rgb(0x99, 0xad, 0x6a);
-const YELLOW: Color = Color::Rgb(0xfa, 0xd0, 0x7a);
-const TEAL: Color = Color::Rgb(0x66, 0x87, 0x99);
+/// Picker colors, resolved once per process from herdr's theme config
+/// (`src/theme.rs`), so the picker follows the Herdr chrome around it.
+fn background() -> Color {
+    crate::theme::palette().background
+}
+
+fn foreground() -> Color {
+    crate::theme::palette().foreground
+}
+
+fn accent() -> Color {
+    crate::theme::palette().accent
+}
+
+fn selection() -> Color {
+    crate::theme::palette().selection
+}
+
+fn muted() -> Color {
+    crate::theme::palette().muted
+}
+
+fn disabled() -> Color {
+    crate::theme::palette().disabled
+}
+
+fn red() -> Color {
+    crate::theme::palette().red
+}
+
+fn green() -> Color {
+    crate::theme::palette().green
+}
+
+fn yellow() -> Color {
+    crate::theme::palette().yellow
+}
+
+fn teal() -> Color {
+    crate::theme::palette().teal
+}
+
 const SPINNER: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -902,7 +934,7 @@ fn render<T>(
 ) {
     let area = frame.area();
     frame.render_widget(
-        Block::default().style(Style::default().bg(BACKGROUND)),
+        Block::default().style(Style::default().bg(background())),
         area,
     );
 
@@ -986,7 +1018,7 @@ fn render_tab_group(frame: &mut Frame, area: Rect, tabs: Vec<Span<'_>>) {
         return;
     }
     frame.render_widget(
-        Paragraph::new(Line::from(tabs)).style(Style::default().bg(BACKGROUND)),
+        Paragraph::new(Line::from(tabs)).style(Style::default().bg(background())),
         area,
     );
 }
@@ -1003,21 +1035,21 @@ fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &Picker
         Line::from(vec![
             Span::styled(
                 "› ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(placeholder, Style::default().fg(MUTED)),
+            Span::styled(placeholder, Style::default().fg(muted())),
         ])
     } else {
         Line::from(vec![
             Span::styled(
                 "› ",
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
             ),
-            Span::styled(&state.query, Style::default().fg(FOREGROUND)),
+            Span::styled(&state.query, Style::default().fg(foreground())),
         ])
     };
     frame.render_widget(
-        Paragraph::new(content).style(Style::default().bg(BACKGROUND)),
+        Paragraph::new(content).style(Style::default().bg(background())),
         area,
     );
     if area.width > 0 && area.height > 0 {
@@ -1033,11 +1065,11 @@ fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &Picker
 
 fn order_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
     let active_style = Style::default()
-        .fg(BACKGROUND)
-        .bg(ACCENT)
+        .fg(background())
+        .bg(accent())
         .add_modifier(Modifier::BOLD);
-    let inactive_style = Style::default().fg(MUTED).bg(BACKGROUND);
-    let separator = Style::default().bg(BACKGROUND);
+    let inactive_style = Style::default().fg(muted()).bg(background());
+    let separator = Style::default().bg(background());
     let mut spans = Vec::with_capacity(order.labels.len() * 2);
     for (index, label) in order.labels.iter().enumerate() {
         if index > 0 {
@@ -1060,8 +1092,8 @@ fn order_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
 /// which view is selected in a narrow popup.
 fn active_label_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
     let active_style = Style::default()
-        .fg(BACKGROUND)
-        .bg(ACCENT)
+        .fg(background())
+        .bg(accent())
         .add_modifier(Modifier::BOLD);
     let label = order
         .labels
@@ -1074,10 +1106,10 @@ fn active_label_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>>
 
 fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
     let active_style = Style::default()
-        .fg(BACKGROUND)
-        .bg(ACCENT)
+        .fg(background())
+        .bg(accent())
         .add_modifier(Modifier::BOLD);
-    let disabled_style = Style::default().fg(DISABLED).bg(BACKGROUND);
+    let disabled_style = Style::default().fg(disabled()).bg(background());
     vec![
         Span::styled(
             " prio ",
@@ -1087,7 +1119,7 @@ fn mode_tabs(priority: bool) -> Vec<Span<'static>> {
                 disabled_style
             },
         ),
-        Span::styled(" ", Style::default().bg(BACKGROUND)),
+        Span::styled(" ", Style::default().bg(background())),
         Span::styled(
             " fuzzy ",
             if priority {
@@ -1195,8 +1227,8 @@ fn render_overflow_badge(
     frame.render_widget(
         Paragraph::new(text).style(
             Style::default()
-                .fg(BACKGROUND)
-                .bg(ACCENT)
+                .fg(background())
+                .bg(accent())
                 .add_modifier(Modifier::BOLD),
         ),
         Rect::new(x + max_width - width, y, width, 1),
@@ -1212,7 +1244,7 @@ fn render_results<T>(
 ) {
     if state.matches.is_empty() {
         frame.render_widget(
-            Paragraph::new(empty_message).style(Style::default().fg(MUTED).bg(BACKGROUND)),
+            Paragraph::new(empty_message).style(Style::default().fg(muted()).bg(background())),
             area,
         );
         return;
@@ -1227,9 +1259,11 @@ fn render_results<T>(
         let choice = &choices[*index];
         let selected = position == state.selected;
         let title_style = if selected {
-            Style::default().fg(FOREGROUND).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(foreground())
+                .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(FOREGROUND)
+            Style::default().fg(foreground())
         };
         let marker = if selected { "› " } else { "  " };
         let tree = if hierarchical {
@@ -1239,23 +1273,23 @@ fn render_results<T>(
         };
         let working = choice.status == Some(ChoiceStatus::Working);
         let (gutter, gutter_color) = if choice.current {
-            ("◆", ACCENT)
+            ("◆", accent())
         } else if choice.highlighted {
-            ("◆", TEAL)
+            ("◆", teal())
         } else if working {
-            (working_indicator(state.tick), YELLOW)
+            (working_indicator(state.tick), yellow())
         } else {
-            (" ", ACCENT)
+            (" ", accent())
         };
         let mut spans = vec![
-            Span::styled(marker, Style::default().fg(ACCENT)),
+            Span::styled(marker, Style::default().fg(accent())),
             Span::styled(format!("{gutter} "), Style::default().fg(gutter_color)),
-            Span::styled(tree, Style::default().fg(MUTED)),
+            Span::styled(tree, Style::default().fg(muted())),
         ];
         if let Some(context) = &choice.context {
             spans.push(Span::styled(
                 format!("{context} "),
-                Style::default().fg(if selected { FOREGROUND } else { ACCENT }),
+                Style::default().fg(if selected { foreground() } else { accent() }),
             ));
         }
         spans.push(Span::styled(&choice.title, title_style));
@@ -1274,7 +1308,7 @@ fn render_results<T>(
             if let Some(detail) = &choice.detail {
                 spans.push(Span::styled(
                     format!("  {detail}"),
-                    Style::default().fg(if selected { FOREGROUND } else { MUTED }),
+                    Style::default().fg(if selected { foreground() } else { muted() }),
                 ));
             }
         }
@@ -1282,14 +1316,14 @@ fn render_results<T>(
             if let Some(suffix) = &choice.primary_suffix {
                 spans.push(Span::styled(
                     format!("  {suffix}"),
-                    Style::default().fg(MUTED),
+                    Style::default().fg(muted()),
                 ));
             }
         }
         let mut lines = vec![Line::from(spans)];
         if has_detail_line(choice, show_details) {
             if let Some(detail) = &choice.detail {
-                let detail_color = if selected { FOREGROUND } else { MUTED };
+                let detail_color = if selected { foreground() } else { muted() };
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(detail, Style::default().fg(detail_color)),
@@ -1299,8 +1333,8 @@ fn render_results<T>(
         ListItem::new(lines)
     });
     let list = List::new(items)
-        .style(Style::default().bg(BACKGROUND))
-        .highlight_style(Style::default().bg(SELECTION));
+        .style(Style::default().bg(background()))
+        .highlight_style(Style::default().bg(selection()));
     let mut list_state = ListState::default().with_selected(Some(state.selected));
     frame.render_stateful_widget(list, area, &mut list_state);
 
@@ -1427,11 +1461,11 @@ fn tree_prefix<T>(index: usize, choices: &[Choice<T>], visible: &[usize]) -> &'s
 
 fn status_icon(status: ChoiceStatus) -> (&'static str, Color) {
     match status {
-        ChoiceStatus::Blocked => ("◉", RED),
-        ChoiceStatus::Working => ("●", YELLOW),
-        ChoiceStatus::Done => ("●", TEAL),
-        ChoiceStatus::Idle => ("✓", GREEN),
-        ChoiceStatus::Unknown => ("○", MUTED),
+        ChoiceStatus::Blocked => ("◉", red()),
+        ChoiceStatus::Working => ("●", yellow()),
+        ChoiceStatus::Done => ("●", teal()),
+        ChoiceStatus::Idle => ("✓", green()),
+        ChoiceStatus::Unknown => ("○", muted()),
     }
 }
 

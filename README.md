@@ -271,8 +271,13 @@ layout if the second move fails.
 
 ### Shared picker controls
 
-All palettes use the same Ratatui/Crossterm picker with Senzu colors and
-Herdr-owned popup chrome.
+All palettes use the same Ratatui/Crossterm picker with colors resolved once
+per process from Herdr's theme config (`src/theme.rs`): the picker maps the
+`[theme.custom]`/`[theme.custom.dark]`/`[theme.custom.light]` token values Herdr
+loads (dark and light picked by querying the terminal background through OSC 11,
+with `COLORFGBG` as fallback), and falls back to the hard-coded Senzu palette
+when the config is absent, unparsable, or does not carry a token. Named base
+themes other than `terminal` are not reproduced. Popups keep Herdr-owned chrome.
 
 | Action | Keys |
 | --- | --- |

@@ -10,6 +10,7 @@ mod popup;
 mod popup_cli;
 mod recency;
 mod space;
+mod theme;
 mod title;
 mod workspace;
 mod zoxide;

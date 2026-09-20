@@ -139,12 +139,25 @@ request/response contract.
 - `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
   editing, tree rows, animated agent-status icons, and `pick_nav`, the
   wizard-level variant whose Escape means "clear the query, then go back
-  one level" while Ctrl-C cancels outright.
+  one level" while Ctrl-C cancels outright. Its colors come from
+  `src/theme.rs`.
 - `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
   pane focus through `workspace.create`, `workspace.list`, `pane.list`,
   `workspace.focus`, and `pane.focus`. The workspace picker has three views:
   `spaces` (workspace -> pane tree), `agents` (flat agent panes by status),
   and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
+- `src/theme.rs`: picker palette resolution. Mirrors herdr's own
+  `config_path()` resolution (`HERDR_CONFIG_PATH`, else `XDG_CONFIG_HOME`,
+  else `~/.config`), line-parses only herdr config's `[theme]` /
+  `[theme.custom]` / `[theme.custom.dark]` / `[theme.custom.light]`
+  sections without a TOML dependency, picks dark or light by querying the
+  terminal background through OSC 11 (with `COLORFGBG` fallback), and maps
+  the ten token values the pickers consume onto `src/picker.rs` colors.
+  Tokens absent from the config fall back to the hard-coded senzu palette;
+  named base themes other than `terminal` are not reproduced. Falls back
+  best-effort: an absent or unparsable config can never make a picker
+  unreadable. Tests for config layering, color parsing, and the luma
+  threshold live here.
 - `src/recency.rs`: bounded move-to-front log of focused pane ids, recorded by
   the `pane.focused` coordinator into the injected state directory. The
   same coordinator clears outstanding local macOS notifications for the
