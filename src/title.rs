@@ -29,6 +29,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
+use crate::session;
 
 /// The fragments that never change over a server's lifetime.
 const SEPARATOR: &str = " \u{203a} ";
@@ -51,8 +52,45 @@ struct ClientWindowTitleSetParams {
 #[derive(Debug, Default, Deserialize)]
 struct PaneEntry {
     #[serde(default)]
+    pane_id: String,
+    #[serde(default)]
+    terminal_id: String,
+    #[serde(default)]
     focused: bool,
     terminal_title_stripped: Option<String>,
+    cwd: Option<String>,
+    agent: Option<String>,
+    agent_session: Option<AgentSession>,
+}
+
+/// The agent's own session handle. For pi, `value` is the session file.
+#[derive(Debug, Deserialize)]
+struct AgentSession {
+    value: Option<String>,
+}
+
+impl PaneEntry {
+    /// The focused pane's terminal title, for the window title.
+    fn focused_terminal_title(&self) -> Option<&str> {
+        self.focused
+            .then_some(self.terminal_title_stripped.as_deref())?
+    }
+
+    /// The inputs to the `session` sidebar token, expected clean by the
+    /// reporter; Herdr already removed spinner glyphs from the title.
+    fn session_token_snapshot(&self) -> session::PaneSnapshot {
+        session::PaneSnapshot {
+            pane_id: self.pane_id.clone(),
+            terminal_id: self.terminal_id.clone(),
+            terminal_title_stripped: self.terminal_title_stripped.clone(),
+            cwd: self.cwd.clone(),
+            agent: self.agent.clone(),
+            agent_session_path: self
+                .agent_session
+                .as_ref()
+                .and_then(|session| session.value.clone()),
+        }
+    }
 }
 
 /// The session-fixed fragments of the title, resolved once from the
@@ -143,23 +181,27 @@ pub fn daemon() -> Result<(), String> {
 
     let client = SocketClient::with_timeout(&socket_path, SOCKET_TIMEOUT);
     let context = TitleContext::from_environment();
+    let mut sessions = session::SessionReporter::new();
     let mut last: Option<String> = None;
     let mut failures: u32 = 0;
     loop {
         std::thread::sleep(POLL_INTERVAL);
-        let outcome =
-            focused_terminal_title(&client).map(|title| compose(&context, title.as_deref()));
-        match outcome {
-            Ok(title) => {
+        match list_panes(&client) {
+            Ok(panes) => {
                 failures = 0;
-                if last.as_deref() == Some(title.as_str()) {
-                    continue;
+                let terminal_title = panes.iter().find_map(|pane| pane.focused_terminal_title());
+                let title = compose(&context, terminal_title);
+                if last.as_deref() != Some(title.as_str()) {
+                    match set_title(&client, &title) {
+                        Ok(()) => last = Some(title),
+                        Err(error) => log(&format!("failed to set window title: {error}")),
+                    }
                 }
-                if let Err(error) = set_title(&client, &title) {
-                    log(&format!("failed to set window title: {error}"));
-                    continue;
-                }
-                last = Some(title);
+                let snapshots: Vec<session::PaneSnapshot> = panes
+                    .iter()
+                    .map(|pane| pane.session_token_snapshot())
+                    .collect();
+                sessions.sync(&client, &snapshots);
             }
             Err(error) => {
                 failures += 1;
@@ -206,22 +248,26 @@ pub fn ensure_daemon(socket_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The session's terminal title, from the focused pane's last program-set
-/// title. Herdr strips escape sequences itself; absent means the pane's
-/// program never set one.
-fn focused_terminal_title(client: &SocketClient) -> Result<Option<String>, String> {
+/// Every pane in the session. The daemon reads the window title's inputs
+/// and the `session` token's inputs from this single snapshot.
+fn list_panes(client: &SocketClient) -> Result<Vec<PaneEntry>, String> {
     let response = client.send("cast:pane-list", "pane.list", PaneListParams {})?;
-    let panes: Vec<PaneEntry> = serde_json::from_value(
+    serde_json::from_value(
         response
             .pointer("/result/panes")
             .cloned()
             .ok_or_else(|| "pane.list missing panes".to_string())?,
     )
-    .map_err(|error| format!("failed to parse pane.list response: {error}"))?;
-    Ok(panes
+    .map_err(|error| format!("failed to parse pane.list response: {error}"))
+}
+
+/// The session's terminal title, from the focused pane's last program-set
+/// title. Herdr strips escape sequences itself; absent means the pane's
+/// program never set one.
+fn focused_terminal_title(client: &SocketClient) -> Result<Option<String>, String> {
+    Ok(list_panes(client)?
         .into_iter()
-        .find(|pane| pane.focused)
-        .and_then(|pane| pane.terminal_title_stripped))
+        .find_map(|pane| pane.focused_terminal_title().map(str::to_string)))
 }
 
 fn set_title(client: &SocketClient, title: &str) -> Result<(), String> {

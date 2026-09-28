@@ -236,6 +236,23 @@ re-spawn the daemon if it died. The daemon holds a `flock` keyed by the
 session's socket path in the plugin state directory, exits when the
 session's server goes away, and never races a second copy.
 
+### Agents sidebar session token
+
+The pane rows in Herdr's Agents sidebar can show a `$session` token, which
+Cast reports for every pane from the title daemon's `pane.list` poll. pi
+writes its terminal title as `π - <session name> - <cwd>` (or `π - <cwd>`
+while the session is unnamed) and Herdr's stripped title keeps the `π`, so
+the token holds the cleaned form: the session name with the prefix and the
+trailing cwd basename removed. An unnamed pi session is labeled from the
+first user message in its session file — the skill name when the session
+opened with a skill run, else the first words of the prompt — then the
+title body, then the agent kind when the pane has no title at all. Reports go through
+`pane.report_metadata` under the `plugin:ad.cast` source with a monotonic
+sequence, refresh on every change, and fully resend every minute.
+
+Pair it with a sidebar row such as
+`[ui.sidebar.agents] rows = [["state_icon", "$session"], ["workspace", "tab", "pane"]]`.
+
 ### Layout palette
 
 The layout palette opens with `prefix+p` in the local Herdr config. It provides:

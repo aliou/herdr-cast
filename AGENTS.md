@@ -176,7 +176,23 @@ request/response contract.
   ensures a resident `herdr-cast daemon` per session, which polls `pane.list`
   and reapplies on change (Herdr withholds `pane.updated` from hooks). The
   daemon singleton is an `flock` on a state-dir lock file keyed by socket
-  path, and the daemon exits after persistent socket loss.
+  path, and the daemon exits after persistent socket loss. Each poll also
+  feeds `src/session.rs`.
+- `src/session.rs`: the `session` Agents-sidebar token, reported per pane
+  from the title daemon's `pane.list` poll through `pane.report_metadata`
+  (source `plugin:ad.cast`). pi writes titles as `π - <session name> - <cwd>`
+  and Herdr's stripped title keeps the `π`; the token holds the session name
+  with that prefix and the ` - <cwd basename>` suffix removed. An unnamed
+  session is labeled from the first user message of the pane's
+  `agent_session` file — the skill name for a `<skill name="…">` opener,
+  else the prompt's first six words, cached per path — then the title body,
+  then the agent kind. Tokens attach to a pane's
+  underlying terminal, so reporter state is keyed by terminal id, pruned
+  against `pane.list`, fully resent every 60 seconds, and sequenced by a
+  monotonic counter the daemon never shares with another writer. Reports
+  carry only the `session` token — no `agent`, `title`, `display_agent`, or
+  `ttl_ms` fields — so they never bind to an agent's lifecycle and stay
+  compatible with `min_herdr_version = "0.8.0"`.
 - `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
   and top-level `~/tmp` directories, and persists the selected zoxide or
   alphabetical order. When zoxide is absent or has no ranked directories
@@ -317,6 +333,10 @@ runtime invocation.
 - Render Space tokens through `space::describe` everywhere outside the
   sidebar, so the picker and the sidebar cannot drift apart.
 - Use injected context and opaque IDs. Never infer workspace, tab, or pane IDs.
+- Only the title daemon writes the `session` pane token. Herdr tracks the
+  report sequence per terminal and source and silently drops stale values, so
+  a second writer under `plugin:ad.cast` would fight the daemon's monotonic
+  counter.
 - The window title belongs to `src/title.rs` alone. No other module may call
   `client.window_title.set`: an explicit title suppresses Herdr's template,
   and a second writer would fight the daemon within one poll. Resolve the

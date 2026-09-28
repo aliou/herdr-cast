@@ -9,6 +9,7 @@ mod picker;
 mod popup;
 mod popup_cli;
 mod recency;
+mod session;
 mod space;
 mod theme;
 mod title;
