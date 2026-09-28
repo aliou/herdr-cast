@@ -1271,12 +1271,13 @@ fn render_results<T>(
         } else {
             ""
         };
-        let working = choice.status == Some(ChoiceStatus::Working);
         let (gutter, gutter_color) = if choice.current {
             ("◆", accent())
         } else if choice.highlighted {
             ("◆", teal())
-        } else if working {
+        } else if choice.status == Some(ChoiceStatus::Blocked) {
+            ("◉", red())
+        } else if choice.status == Some(ChoiceStatus::Working) {
             (working_indicator(state.tick), yellow())
         } else {
             (" ", accent())
