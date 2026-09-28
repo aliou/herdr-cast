@@ -10,6 +10,7 @@ use crate::picker::{
     pick_with_detail, pick_with_detail_and_query_choice, Choice, ChoiceStatus, OrderToggle, Picker,
     ToggleKind,
 };
+use crate::session;
 use crate::space;
 use crate::zoxide::{self, RankedDirectory};
 
@@ -95,11 +96,7 @@ struct PaneInfo {
     focused: bool,
     cwd: Option<String>,
     foreground_cwd: Option<String>,
-    label: Option<String>,
     agent: Option<String>,
-    title: Option<String>,
-    terminal_title: Option<String>,
-    terminal_title_stripped: Option<String>,
     display_agent: Option<String>,
     agent_status: String,
     #[serde(default)]
@@ -587,16 +584,18 @@ fn agent_choice(pane: &PaneInfo, workspace_label: &str) -> Choice<FocusTarget> {
     .prioritize_alternate_order()
 }
 
+/// A pane row's title is the `session` token the title daemon reports —
+/// the exact string the Agents sidebar shows, derived once on the server.
+/// The daemon reports shells too (their terminal title), so a missing token
+/// only means the daemon has not reached this pane yet; that transient case
+/// shows the agent kind. This function must never re-derive a title from
+/// raw pane fields: two derivations of the same string always drift.
 fn pane_title(pane: &PaneInfo) -> String {
-    pane.title
-        .as_deref()
-        .or(pane.terminal_title_stripped.as_deref())
-        .or(pane.label.as_deref())
-        .or(pane.terminal_title.as_deref())
-        .or(pane.display_agent.as_deref())
-        .or(pane.agent.as_deref())
-        .unwrap_or("shell")
-        .to_string()
+    pane.tokens
+        .get(session::SESSION_TOKEN)
+        .filter(|token| !token.is_empty())
+        .cloned()
+        .unwrap_or_else(|| pane.agent_name().unwrap_or("shell").to_string())
 }
 
 fn pane_search_text(pane: &PaneInfo, title: &str, detail: &str) -> String {
@@ -891,21 +890,41 @@ mod tests {
         }
     }
 
-    fn pane(id: &str, workspace_id: &str, title: &str) -> PaneInfo {
+    fn pane(id: &str, workspace_id: &str, _title: &str) -> PaneInfo {
         PaneInfo {
             pane_id: id.into(),
             workspace_id: workspace_id.into(),
             focused: false,
             cwd: None,
             foreground_cwd: None,
-            label: None,
             agent: Some("pi".into()),
-            title: Some(title.into()),
-            terminal_title: None,
-            terminal_title_stripped: None,
             display_agent: Some("Pi".into()),
             agent_status: "working".into(),
             tokens: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn pane_rows_title_from_the_session_token_like_the_sidebar() {
+        let mut with_token = pane("p:one", "w:one", "some title");
+        with_token.tokens = BTreeMap::from([(
+            session::SESSION_TOKEN.to_string(),
+            "sk:skill-creator".to_string(),
+        )]);
+        assert_eq!(pane_title(&with_token), "sk:skill-creator");
+
+        // No token yet (the daemon polls on a delay): the transient row
+        // shows the agent kind, never a re-derived title.
+        let without_token = pane("p:two", "w:one", "some title");
+        assert_eq!(pane_title(&without_token), "Pi");
+
+        let mut empty_token = pane("p:three", "w:one", "some title");
+        empty_token.tokens = BTreeMap::from([(session::SESSION_TOKEN.to_string(), String::new())]);
+        assert_eq!(pane_title(&empty_token), "Pi");
+
+        let mut shell = pane("p:four", "w:one", "some title");
+        shell.display_agent = None;
+        shell.agent = None;
+        assert_eq!(pane_title(&shell), "shell");
     }
 }

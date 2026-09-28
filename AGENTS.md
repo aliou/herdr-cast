@@ -337,6 +337,15 @@ runtime invocation.
   report sequence per terminal and source and silently drops stale values, so
   a second writer under `plugin:ad.cast` would fight the daemon's monotonic
   counter.
+- Display strings are derived once, by the reporter, and read back from
+  server state (`pane.tokens`, `workspace.tokens`) by every surface. A
+  consumer must never re-derive a label from raw pane or workspace fields:
+  two derivations of the same string always drift, which is how the
+  workspace picker's pane titles once diverged from the Agents sidebar. A
+  missing token means "not reported yet"; show a minimal transient
+  placeholder, not a locally computed guess. Rendering a server-held token
+  is fine (that is what `space::describe` does); composing new display
+  strings from raw fields is not.
 - The window title belongs to `src/title.rs` alone. No other module may call
   `client.window_title.set`: an explicit title suppresses Herdr's template,
   and a second writer would fight the daemon within one poll. Resolve the
