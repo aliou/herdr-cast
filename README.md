@@ -127,6 +127,20 @@ Herdr socket. It polls the pasteboard change count every 300 ms and exits
 after sustained socket loss. It uses the existing `pane.process_info` API;
 it does not need a modified Herdr build.
 
+To start the watcher after installing Cast into an already-running session,
+run this inside a Herdr pane on Factorial. The pane supplies `HERDR_SOCKET_PATH`;
+the command supplies the plugin state directory normally injected by startup
+hooks:
+
+```sh
+HERDR_PLUGIN_STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/herdr/plugins/ad.cast" \
+  ~/.local/bin/herdr-cast forward-start
+```
+
+No server restart is needed. The command exits quietly if a watcher already
+holds this session's lock. Verify by copying text in pi on Factorial and
+pasting on the machine attached to it.
+
 ### Workspace and agent picker
 
 The workspace picker opens with `prefix+space` in the local Herdr config.
