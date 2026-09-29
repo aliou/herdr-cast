@@ -21,6 +21,11 @@ command = ["herdr-cast", "sync-spaces"]
 [[startup]]
 command = ["herdr-cast", "sync-title"]
 
+# Mirror Factorial's macOS text pasteboard to Herdr's attached client through
+# the focused pane's PTY. The command no-ops on Linux and non-Factorial Macs.
+[[startup]]
+command = ["herdr-cast", "forward-start"]
+
 # Fire a notification whenever a pane's agent status changes. The handler
 # filters to the hard-coded blocked and done statuses.
 [[events]]

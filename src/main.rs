@@ -1,5 +1,6 @@
 mod api;
 mod events;
+mod forward;
 mod hunk;
 mod lazygit;
 mod move_wizard;
@@ -32,6 +33,8 @@ fn main() {
     let result = match command.as_deref() {
         Some("pane-focused") if arguments.next().is_none() => pane_focused_hook(),
         Some("daemon") if arguments.next().is_none() => title::daemon(),
+        Some("forward-start") if arguments.next().is_none() => forward::start(),
+        Some("forward-daemon") if arguments.next().is_none() => forward::daemon(),
         Some("clear-notification") if arguments.next().is_none() => notify::clear_from_event(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("forward-notify") => notify::forward(arguments.collect()),
@@ -68,7 +71,7 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|palette|directory-workspace",
+            "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|forward-start|forward-daemon|palette|directory-workspace",
             "|workspace-picker|lazygit|hunk|hunk-log|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
@@ -198,6 +201,8 @@ mod tests {
         assert!(!holds_popup_error("clear-notification"));
         assert!(!holds_popup_error("pane-focused"));
         assert!(!holds_popup_error("daemon"));
+        assert!(!holds_popup_error("forward-start"));
+        assert!(!holds_popup_error("forward-daemon"));
         assert!(!holds_popup_error("sync-space"));
         assert!(!holds_popup_error("sync-title"));
         assert!(!holds_popup_error("sync-spaces"));

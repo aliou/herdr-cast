@@ -109,6 +109,24 @@ bundles into `libexec/`, and `forward-notify` finds them relative to the
 resolved herdr-cast executable, so no configuration is needed on any machine
 that has the package on `PATH`.
 
+### Pasteboard forwarding
+
+On Factorial (`factorial-machine`), Cast watches macOS's text pasteboard
+through AppKit. When it changes, Cast finds the focused Herdr pane's PTY and
+writes OSC 52 there. Herdr forwards that sequence to its foreground client,
+whether attached with `herdr --remote` or through an interactive SSH session.
+Copies from native clipboard writers such as pi work without using `pbcopy`.
+Only text up to 192 KiB is forwarded; empty text and image-only changes are
+ignored. No watcher runs on Linux or other Macs.
+
+Herdr does not expose its pane OSC 52 writes to plugins. If an app both writes
+the pasteboard and emits OSC 52, the client can receive the same copy twice.
+
+`forward-start` runs at plugin startup and spawns one `forward-daemon` per
+Herdr socket. It polls the pasteboard change count every 300 ms and exits
+after sustained socket loss. It uses the existing `pane.process_info` API;
+it does not need a modified Herdr build.
+
 ### Workspace and agent picker
 
 The workspace picker opens with `prefix+space` in the local Herdr config.

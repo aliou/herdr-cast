@@ -102,6 +102,11 @@ request/response contract.
   verbatim. It resolves the bundles from `libexec/` relative to the
   canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it runs
   in client context.
+- `src/forward/`: macOS-only pasteboard-to-client forwarding for Factorial.
+  A startup hook starts a per-socket daemon that reads AppKit's pasteboard
+  change count and text through `objc2-app-kit`, then finds the focused
+  pane's tty from `pane.process_info` and its shell PID and writes OSC 52
+  to that pane. Non-macOS builds leave both commands inert.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a two-pane split, owns the shared `pane.move`
   protocol types and the current-location lookup, dispatches "Move pane…"
