@@ -57,7 +57,7 @@ const PAD_VALUE: &str = "\u{2800}";
 /// The order the sidebar row lists reported tokens in, and the separator
 /// Herdr puts between them.
 const LOCATION_TOKENS: [&str; 4] = [HOST_KIND_TOKEN, HOST_TOKEN, ORG_TOKEN, REPOS_TOKEN];
-const TOKEN_SEPARATOR: &str = " \u{b7} ";
+pub(crate) const TOKEN_SEPARATOR: &str = " \u{b7} ";
 
 /// Which organization or client owns a path, keyed by its root below `$HOME`.
 /// `None` takes the first path segment below that root as the name, which is
@@ -214,6 +214,20 @@ pub fn describe(tokens: &BTreeMap<String, String>) -> Option<String> {
         .filter(|value| !value.is_empty())
         .collect::<Vec<_>>();
     (!parts.is_empty()).then(|| parts.join(TOKEN_SEPARATOR))
+}
+
+/// The machine a space runs on, rendered like the sidebar's host fragments
+/// (`sbx · host`), for popups that label or filter panes by machine. `None`
+/// for local spaces and for spaces whose tokens have not been reported yet.
+pub(crate) fn machine(tokens: &BTreeMap<String, String>) -> Option<String> {
+    let host = tokens.get(HOST_TOKEN).filter(|host| !host.is_empty())?;
+    Some(
+        tokens
+            .get(HOST_KIND_TOKEN)
+            .filter(|kind| !kind.is_empty())
+            .map(|kind| format!("{kind}{TOKEN_SEPARATOR}{host}"))
+            .unwrap_or_else(|| host.clone()),
+    )
 }
 
 pub fn shell_init(shell: &str) -> Result<(), String> {
@@ -681,6 +695,27 @@ mod tests {
         assert_eq!(cleared.get(HOST_TOKEN), Some(&None));
         assert_eq!(cleared.get(HOST_KIND_TOKEN), Some(&None));
         assert_eq!(cleared.get(PAD_TOKEN), Some(&None));
+    }
+
+    #[test]
+    fn machine_renders_the_sidebar_host_fragments() {
+        assert_eq!(machine(&BTreeMap::new()), None, "local spaces have none");
+        assert_eq!(
+            machine(&BTreeMap::from([("org".into(), "378".into())])),
+            None,
+            "local tokens are not a machine"
+        );
+        assert_eq!(
+            machine(&BTreeMap::from([("host".into(), "copper".into())])),
+            Some("copper".into())
+        );
+        assert_eq!(
+            machine(&BTreeMap::from([
+                ("host".into(), "copper".into()),
+                ("hostkind".into(), "sbx".into())
+            ])),
+            Some(format!("sbx{TOKEN_SEPARATOR}copper"))
+        );
     }
 
     #[test]

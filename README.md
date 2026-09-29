@@ -188,7 +188,10 @@ custom workspace tokens to fill that row:
   without being whitespace. Every Space then keeps the same height.
 
 The workspace picker renders the same tokens in the same order, so a Space
-reads the same in the sidebar and in the popup.
+reads the same in the sidebar and in the popup. The `host` and `hostkind`
+tokens also join the fuzzy search of every pane and agent row, so typing a
+host name or `sbx` filters to the panes running on that machine, and the flat
+agents and panes views show the machine next to the workspace label.
 
 Nothing here repeats the Space name. Herdr names a Space after the repository
 or directory its root pane sits in and renames it when that pane moves, so the

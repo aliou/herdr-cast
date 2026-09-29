@@ -146,6 +146,10 @@ request/response contract.
   `workspace.focus`, and `pane.focus`. The workspace picker has three views:
   `spaces` (workspace -> pane tree), `agents` (flat agent panes by status),
   and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
+  Pane and agent rows carry their space's machine, read from the server-held
+  `host`/`hostkind` workspace tokens via `space::machine`, in their search
+  text and in the flat views' context label, so a host name or `sbx` filters
+  by machine in every view.
 - `src/theme.rs`: picker palette resolution. Mirrors herdr's own
   `config_path()` resolution (`HERDR_CONFIG_PATH`, else `XDG_CONFIG_HOME`,
   else `~/.config`), line-parses only herdr config's `[theme]` /

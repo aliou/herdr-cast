@@ -187,6 +187,11 @@ impl<T> Choice<T> {
         self
     }
 
+    #[cfg(test)]
+    pub fn context(&self) -> Option<&str> {
+        self.context.as_deref()
+    }
+
     pub fn inline_detail(mut self, primary_only: bool) -> Self {
         self.inline_detail = true;
         self.detail_primary_only = primary_only;

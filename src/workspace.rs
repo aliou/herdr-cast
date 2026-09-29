@@ -403,12 +403,22 @@ fn picker_choices(
         .iter()
         .map(|workspace| (workspace.workspace_id.clone(), workspace.label.clone()))
         .collect();
+    let machines: BTreeMap<String, String> = workspaces
+        .iter()
+        .filter_map(|workspace| {
+            space::machine(&workspace.tokens)
+                .map(|machine| (workspace.workspace_id.clone(), machine))
+        })
+        .collect();
     let mut choices = Vec::new();
     // Build the spaces tree and the agents flat list first, exactly as before.
     for workspace in workspaces {
         let root_index = choices.len();
         let workspace_id = workspace.workspace_id.clone();
         let workspace_label = workspace.label.clone();
+        // Where the space runs, as reported by the sidebar's host tokens.
+        // Local spaces carry no machine, so their rows stay unchanged.
+        let machine = machines.get(&workspace_id).map(String::as_str);
         choices.push(workspace_choice(workspace).primary_only());
         let workspace_panes = panes
             .iter()
@@ -417,17 +427,22 @@ fn picker_choices(
         choices.extend(
             workspace_panes
                 .iter()
-                .map(|pane| pane_choice(pane, root_index).primary_only()),
+                .map(|pane| pane_choice(pane, root_index, machine).primary_only()),
         );
         choices.extend(
             workspace_panes
                 .into_iter()
                 .filter(|pane| pane.agent_name().is_some())
-                .map(|pane| agent_choice(pane, &workspace_label).alternate_only()),
+                .map(|pane| agent_choice(pane, &workspace_label, machine).alternate_only()),
         );
     }
     // View 2: every pane flat, most-recent-first.
-    choices.extend(pane_recency_choices(&panes, recency, &workspace_labels));
+    choices.extend(pane_recency_choices(
+        &panes,
+        recency,
+        &workspace_labels,
+        &machines,
+    ));
     choices
 }
 
@@ -438,15 +453,12 @@ fn pane_recency_choices(
     panes: &[PaneInfo],
     recency: &[String],
     workspace_labels: &BTreeMap<String, String>,
+    machines: &BTreeMap<String, String>,
 ) -> Vec<Choice<FocusTarget>> {
     let mut fallback = usize::MAX;
     panes
         .iter()
         .map(|pane| {
-            let workspace_label = workspace_labels
-                .get(&pane.workspace_id)
-                .cloned()
-                .unwrap_or_else(|| pane.workspace_id.clone());
             let recency_rank = match recency.iter().position(|id| id == &pane.pane_id) {
                 Some(position) => position,
                 None => {
@@ -456,7 +468,16 @@ fn pane_recency_choices(
                     fallback
                 }
             };
-            flat_pane_choice(pane, &workspace_label, recency_rank).only_in_view(2)
+            flat_pane_choice(
+                pane,
+                workspace_labels
+                    .get(&pane.workspace_id)
+                    .map(String::as_str)
+                    .unwrap_or(&pane.workspace_id),
+                machines.get(&pane.workspace_id).map(String::as_str),
+                recency_rank,
+            )
+            .only_in_view(2)
         })
         .collect()
 }
@@ -467,23 +488,30 @@ fn pane_recency_choices(
 fn flat_pane_choice(
     pane: &PaneInfo,
     workspace_label: &str,
+    machine: Option<&str>,
     recency_rank: usize,
 ) -> Choice<FocusTarget> {
     let title = pane_title(pane);
     let agent_name = pane.agent_name();
     let detail = agent_name.unwrap_or("shell").to_string();
-    let search = format!(
-        "{} {}",
-        workspace_label,
-        pane_search_text(pane, &title, &detail)
-    );
+    let mut search = String::from(workspace_label);
+    if let Some(machine) = machine {
+        search.push(' ');
+        search.push_str(machine);
+    }
+    search.push(' ');
+    search.push_str(&pane_search_text(pane, &title, &detail));
+    let context = match machine {
+        Some(machine) => format!("{workspace_label}{}{machine}", space::TOKEN_SEPARATOR),
+        None => workspace_label.to_string(),
+    };
     Choice::new(
         FocusTarget::Pane(pane.pane_id.clone()),
         title,
         Some(detail),
         search,
     )
-    .with_context(workspace_label)
+    .with_context(context)
     .inline_detail(false)
     .current(pane.focused)
     .with_optional_status(agent_name.map(|_| parse_status(&pane.agent_status)))
@@ -544,11 +572,15 @@ fn workspace_choice(workspace: WorkspaceInfo) -> Choice<FocusTarget> {
     .alternate_order(order)
 }
 
-fn pane_choice(pane: &PaneInfo, parent: usize) -> Choice<FocusTarget> {
+fn pane_choice(pane: &PaneInfo, parent: usize, machine: Option<&str>) -> Choice<FocusTarget> {
     let title = pane_title(pane);
     let agent_name = pane.agent_name();
     let detail = agent_name.unwrap_or("shell").to_string();
-    let search = pane_search_text(pane, &title, &detail);
+    let mut search = pane_search_text(pane, &title, &detail);
+    if let Some(machine) = machine {
+        search.push(' ');
+        search.push_str(machine);
+    }
 
     Choice::new(
         FocusTarget::Pane(pane.pane_id.clone()),
@@ -562,21 +594,31 @@ fn pane_choice(pane: &PaneInfo, parent: usize) -> Choice<FocusTarget> {
     .alternate_order(status_order(parse_status(&pane.agent_status)))
 }
 
-fn agent_choice(pane: &PaneInfo, workspace_label: &str) -> Choice<FocusTarget> {
+fn agent_choice(
+    pane: &PaneInfo,
+    workspace_label: &str,
+    machine: Option<&str>,
+) -> Choice<FocusTarget> {
     let title = pane_title(pane);
     let agent_name = pane.agent_name().unwrap_or("agent").to_string();
-    let search = format!(
-        "{} {}",
-        workspace_label,
-        pane_search_text(pane, &title, &agent_name)
-    );
+    let mut search = String::from(workspace_label);
+    if let Some(machine) = machine {
+        search.push(' ');
+        search.push_str(machine);
+    }
+    search.push(' ');
+    search.push_str(&pane_search_text(pane, &title, &agent_name));
+    let context = match machine {
+        Some(machine) => format!("{workspace_label}{}{machine}", space::TOKEN_SEPARATOR),
+        None => workspace_label.to_string(),
+    };
     Choice::new(
         FocusTarget::Pane(pane.pane_id.clone()),
         title,
         Some(agent_name),
         search,
     )
-    .with_context(workspace_label)
+    .with_context(context)
     .inline_detail(false)
     .current(pane.focused)
     .with_optional_status(Some(parse_status(&pane.agent_status)))
@@ -842,6 +884,59 @@ mod tests {
             .find(|choice| choice.value == FocusTarget::Pane("p:shell".into()))
             .unwrap();
         assert_eq!(shell.sort_key(), 1);
+    }
+
+    #[test]
+    fn pane_rows_carry_their_space_machine() {
+        let mut remote = workspace("w:sbx", "tmp");
+        remote.tokens = BTreeMap::from([
+            ("host".into(), "copper-eva-stratt".into()),
+            ("hostkind".into(), "sbx".into()),
+        ]);
+        let choices = picker_choices(vec![remote], vec![pane("p:one", "w:sbx", "an agent")], &[]);
+        // The spaces-tree child, the agents-view row, and the panes-view row
+        // all match on the machine, so typing a host name filters panes.
+        let rows = choices
+            .iter()
+            .filter(|choice| choice.value.is_pane())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|choice| choice.search_text.contains("copper-eva-stratt")));
+        assert!(rows.iter().all(|choice| choice.search_text.contains("sbx")));
+        // Flat rows surface the machine next to the workspace label, rendered
+        // like the sidebar's second row.
+        for choice in &rows {
+            if let Some(context) = choice.context() {
+                assert_eq!(
+                    context,
+                    format!(
+                        "tmp{}sbx{}copper-eva-stratt",
+                        space::TOKEN_SEPARATOR,
+                        space::TOKEN_SEPARATOR
+                    )
+                );
+            }
+        }
+
+        // Local spaces keep the plain workspace label and no machine text.
+        let choices = picker_choices(
+            vec![workspace("w:local", "cast")],
+            vec![pane("p:two", "w:local", "an agent")],
+            &[],
+        );
+        let rows = choices
+            .iter()
+            .filter(|choice| choice.value.is_pane())
+            .collect::<Vec<_>>();
+        assert_eq!(rows.len(), 3);
+        assert!(rows
+            .iter()
+            .all(|choice| !choice.search_text.contains("sbx")));
+        assert!(rows
+            .iter()
+            .all(|choice| choice.context().is_none_or(|context| context == "cast")));
     }
 
     #[test]
