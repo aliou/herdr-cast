@@ -20,6 +20,11 @@ use super::tunnel::{self, Outcome, Port};
 use super::wire::{self, Frame};
 use crate::api::SocketClient;
 
+// TODO: raise the scan interval; 10 seconds is probably fine. Slower only
+// delays the first link after an attach, and senders fall back meanwhile.
+// TODO: list processes natively instead of running `/bin/ps` each tick:
+// `proc_listallpids` + `proc_pidinfo(PROC_PIDTBSDINFO)` for pid, parent, and
+// start time, and `sysctl(KERN_PROCARGS2)` for the arguments.
 const TICK: Duration = Duration::from_secs(3);
 /// A link that has not exchanged hellos by then is killed and retried.
 const CONNECT_DEADLINE: Duration = Duration::from_secs(15);
