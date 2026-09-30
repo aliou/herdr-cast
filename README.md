@@ -119,7 +119,9 @@ herdr-cast bridge ── ssh ──▶ herdr-cast bridge-relay ◀── ~/.loca
   (mode 0600) while the link lives, forwards each request to the host, and
   answers with the host's ack after the host applied it. It removes the
   socket when the link ends. A second link to the same machine (say, its LAN
-  and tailnet address) takes the socket over and the first one idles.
+  and tailnet address) takes the socket over and the first one idles until
+  the set of linked machines changes, for example when the second link's
+  last client exits.
 - The host applies a notification through the status's `HerdrNotify` bundle
   with the `PROJECT@HOST` layout, grouped per host and pane, and a pasteboard
   copy through `pbcopy`.

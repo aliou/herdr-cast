@@ -105,7 +105,9 @@ request/response contract.
   ControlPath=none <target> 'exec herdr-cast bridge-relay'` link per
   machine (`host.rs`, `tunnel.rs`), with backoff, a hello deadline, a
   60-second retry for remotes whose herdr-cast lacks the relay, and a park
-  state for a link whose socket another link took over. It exits after
+  state for a link whose socket another link took over (cleared whenever
+  the set of linked machines changes, so the parked link resumes when the
+  other one leaves). It exits after
   sustained loss of its Herdr socket. The remote `bridge-relay`
   (`relay.rs`) binds `~/.local/state/herdr-cast/bridge.sock` by rename
   (atomic takeover), forwards one sender request at a time over stdio, and

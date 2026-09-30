@@ -96,6 +96,12 @@ pub fn run() -> Result<(), String> {
 }
 
 fn reconcile(links: &mut BTreeMap<String, Link>, wanted: BTreeMap<String, Wanted>, control: &Path) {
+    // A link parks when another link to the same machine (another address)
+    // takes the remote socket. That other link may be the one leaving now,
+    // so any change in the set of machines gives parked links another try.
+    if !links.keys().eq(wanted.keys()) {
+        unpark(links);
+    }
     links.retain(|key, link| {
         let keep = wanted.contains_key(key);
         if !keep {
@@ -114,6 +120,14 @@ fn reconcile(links: &mut BTreeMap<String, Link>, wanted: BTreeMap<String, Wanted
             .or_insert_with(|| Link::new(key, found.clone()));
         link.wanted = found;
         link.poll(now, control);
+    }
+}
+
+fn unpark(links: &mut BTreeMap<String, Link>) {
+    for link in links.values_mut() {
+        if link.parked.take().is_some() {
+            log(&format!("{}: machines changed; unparked", link.target()));
+        }
     }
 }
 
@@ -549,6 +563,44 @@ mod tests {
         assert_eq!(delays, [5, 10, 20, 40, 60, 60]);
         link.retry_later(now, true);
         assert_eq!(link.backoff, MIN_BACKOFF);
+    }
+
+    #[test]
+    fn a_leaving_machine_unparks_the_others() {
+        let wanted = |pids: &[u32]| Wanted {
+            target: "factorial".into(),
+            clients: pids
+                .iter()
+                .map(|pid| super::super::targets::Client {
+                    pid: *pid,
+                    ppid: 1,
+                    age: 0,
+                    target: "factorial".into(),
+                    session: None,
+                })
+                .collect(),
+        };
+        let mut links = BTreeMap::new();
+        let mut lan = Link::new("lan".into(), wanted(&[1]));
+        lan.parked = Some(lan.wanted.pids());
+        // Parked links do not spawn, so reconciling them runs no ssh.
+        lan.retry_at = Instant::now() + Duration::from_secs(3600);
+        links.insert("lan".to_string(), lan);
+        let mut tailnet = Link::new("tailnet".into(), wanted(&[2]));
+        tailnet.retry_at = Instant::now() + Duration::from_secs(3600);
+        links.insert("tailnet".to_string(), tailnet);
+
+        let mut same = BTreeMap::new();
+        same.insert("lan".to_string(), wanted(&[1]));
+        same.insert("tailnet".to_string(), wanted(&[2]));
+        reconcile(&mut links, same, Path::new("/tmp/unused.sock"));
+        assert!(links["lan"].parked.is_some(), "same machines keep the park");
+
+        let mut only_lan = BTreeMap::new();
+        only_lan.insert("lan".to_string(), wanted(&[1]));
+        reconcile(&mut links, only_lan, Path::new("/tmp/unused.sock"));
+        assert_eq!(links.len(), 1);
+        assert!(links["lan"].parked.is_none(), "the tailnet link left");
     }
 
     #[test]
