@@ -76,6 +76,7 @@ request/response contract.
 - `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
   `clear-notification`, `forward-notify`, `daemon`, `forward-start`,
   `forward-daemon`, `bridge-start`, `bridge`, `bridge-relay`, `bridge-send`,
+  `bridge-focus`,
   `focus`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
   `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
@@ -114,7 +115,13 @@ request/response contract.
   `notify` and the pasteboard watcher; `wire.rs` defines the frames (one
   JSON header line plus a raw body of `len` bytes). The host applies
   notifications through `notify::deliver_bridged` and pasteboard text
-  through `/usr/bin/pbcopy`. Linux builds keep the relay and sender and
+  through `/usr/bin/pbcopy`. Notifications carry the sender's Herdr socket
+  and `HERDR_SESSION`; their click runs `bridge-focus`, which asks the host
+  daemon over `bridge-control.sock` (state dir) to send a `focus` frame down
+  the link (the relay calls `agent.focus` on that socket) and gets back the
+  candidate Ghostty tab pids (`Wanted::tab_pids`: clients of the session
+  first, newest first, each client's pid then its parent's), then raises
+  the first matching tab through Ghostty's AppleScript `focus`. Linux builds keep the relay and sender and
   leave the host inert.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
@@ -353,6 +360,10 @@ runtime invocation.
   reads its message from a non-terminal stdin and blocks.
 - Check the bridge body cap (1 MiB) before connecting on the sender and
   before allocating on the reader.
+- Run Ghostty AppleScript only from the notification click
+  (`bridge-focus`, `focus`), which runs inside the HerdrNotify bundle that
+  holds the Automation grant. The bridge daemon must never drive Ghostty
+  itself; that would prompt under another identity.
 - Request terminal notifications through Herdr's `notification.show` socket
   method with `sound = "none"` on every platform. On macOS, skip the local
   notifier only when the server reports the notification shown to an attached

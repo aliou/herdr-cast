@@ -302,7 +302,17 @@ pub(crate) fn wait_with_timeout(
 /// Deliver a notification that arrived through the bridge from another
 /// machine. Grouping is qualified by the origin host because pane ids repeat
 /// across machines.
-pub(crate) fn deliver_bridged(notification: &bridge::wire::Notification) -> Result<(), String> {
+/// Where a bridged notification's click goes: the host daemon's control
+/// socket and the link that carried the notification.
+pub(crate) struct BridgeClick {
+    pub control: PathBuf,
+    pub key: String,
+}
+
+pub(crate) fn deliver_bridged(
+    notification: &bridge::wire::Notification,
+    click: &BridgeClick,
+) -> Result<(), String> {
     let paths = Paths::for_client()?;
     let variant = bundle_variant(&notification.status);
     let notifier = paths.notifier(variant);
@@ -324,13 +334,54 @@ pub(crate) fn deliver_bridged(notification: &bridge::wire::Notification) -> Resu
         host: Some(&host),
     };
     let group = format!("{host}:{}", notification.pane);
-    let argv = notifier_argv(
-        &parts,
-        Some(&group),
-        Some(&notification.status),
-        Some(ACTIVATE_BUNDLE_ID),
-    );
+    // Older senders do not report their Herdr socket; their click can only
+    // raise Ghostty.
+    if notification.socket.is_empty() {
+        let argv = notifier_argv(
+            &parts,
+            Some(&group),
+            Some(&notification.status),
+            Some(ACTIVATE_BUNDLE_ID),
+        );
+        return run_notifier(&notifier, &argv);
+    }
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
+    let mut argv = notifier_argv(&parts, Some(&group), Some(&notification.status), None);
+    argv.push("-execute".to_string());
+    argv.push(bridge_click_command(&executable, click, notification));
     run_notifier(&notifier, &argv)
+}
+
+fn bridge_click_command(
+    executable: &Path,
+    click: &BridgeClick,
+    notification: &bridge::wire::Notification,
+) -> String {
+    [
+        executable.to_string_lossy().as_ref(),
+        "bridge-focus",
+        click.control.to_string_lossy().as_ref(),
+        &click.key,
+        notification.session.as_deref().unwrap_or(""),
+        &notification.socket,
+        &notification.pane,
+    ]
+    .into_iter()
+    .map(shell_quote)
+    .collect::<Vec<_>>()
+    .join(" ")
+}
+
+/// Raise the Ghostty tab whose foreground process is the first of `pids`
+/// found, or just activate Ghostty when none is. Best-effort.
+pub(crate) fn raise_ghostty_tab(pids: &[u32]) {
+    #[cfg(target_os = "macos")]
+    if pids.is_empty() || !run_applescript(&focus_terminal_by_pid_script(pids)) {
+        activate_ghostty_app();
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = pids;
 }
 
 /// Keep every notifier identity registered so bridged notifications never
@@ -524,6 +575,10 @@ fn deliver(
         action: pending.action.clone(),
         workspace: pending.workspace.clone(),
         project: pending.project.clone(),
+        socket: socket_path.unwrap_or_default().to_string(),
+        session: std::env::var("HERDR_SESSION")
+            .ok()
+            .filter(|session| !session.is_empty()),
     }) {
         Ok(()) => return Ok(()),
         // The usual case on the host Mac itself; not worth a log line.
@@ -875,7 +930,7 @@ fn focus_ghostty_terminal_for_session(socket_path: &str) -> bool {
     let Some(pid) = herdr_client_pid(socket_path) else {
         return false;
     };
-    run_applescript(&focus_terminal_by_pid_script(pid))
+    run_applescript(&focus_terminal_by_pid_script(&[pid]))
 }
 
 /// The pid of the `herdr` client process Ghostty launched for `socket_path`.
@@ -936,14 +991,21 @@ fn parent_pid(pid: u32) -> Option<u32> {
 /// brings that terminal's window and tab to the front directly, so no
 /// separate app activation step is needed on success.
 #[cfg(target_os = "macos")]
-fn focus_terminal_by_pid_script(pid: u32) -> String {
+fn focus_terminal_by_pid_script(pids: &[u32]) -> String {
+    let pids = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         r#"tell application "Ghostty"
-    repeat with candidate in terminals
-        if pid of candidate is {pid} then
-            focus candidate
-            return true
-        end if
+    repeat with wanted in {{{pids}}}
+        repeat with candidate in terminals
+            if pid of candidate is (contents of wanted) then
+                focus candidate
+                return true
+            end if
+        end repeat
     end repeat
     return false
 end tell"#
@@ -952,20 +1014,41 @@ end tell"#
 
 #[cfg(target_os = "macos")]
 fn run_applescript(script: &str) -> bool {
-    match Command::new("osascript").arg("-e").arg(script).output() {
-        Ok(output) if output.status.success() => {
-            String::from_utf8_lossy(&output.stdout).trim() == "true"
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
-            log(&format!("osascript failed: {}", truncate(&stderr, 500)));
-            false
-        }
+    use std::io::Read;
+    // A hung Ghostty must not hang a notification click.
+    const TIMEOUT: Duration = Duration::from_secs(5);
+    let mut child = match Command::new("osascript")
+        .arg("-e")
+        .arg(script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
         Err(error) => {
             log(&format!("failed to run osascript: {error}"));
-            false
+            return false;
         }
+    };
+    let Some(status) = wait_with_timeout(&mut child, TIMEOUT) else {
+        log(&format!("osascript did not exit within {TIMEOUT:?}"));
+        return false;
+    };
+    let mut stdout = String::new();
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stdout.take() {
+        let _ = pipe.read_to_string(&mut stdout);
     }
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    if !status.success() {
+        let stderr = stderr.replace('\n', " ");
+        log(&format!("osascript failed: {}", truncate(&stderr, 500)));
+        return false;
+    }
+    stdout.trim() == "true"
 }
 
 impl Paths {
@@ -1341,11 +1424,36 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn builds_a_script_that_matches_the_terminal_by_pid_and_focuses_it() {
-        let script = focus_terminal_by_pid_script(1760);
+        let script = focus_terminal_by_pid_script(&[1760, 1759]);
         assert!(script.contains(r#"tell application "Ghostty""#));
-        assert!(script.contains("if pid of candidate is 1760 then"));
+        assert!(script.contains("repeat with wanted in {1760, 1759}"));
+        assert!(script.contains("if pid of candidate is (contents of wanted) then"));
         assert!(script.contains("focus candidate"));
         assert!(script.contains("return false"));
+    }
+
+    #[test]
+    fn quotes_every_bridge_click_argument_for_the_shell() {
+        let notification = bridge::wire::Notification {
+            id: 1,
+            host: "donut".into(),
+            pane: "w1:p1;echo bad".into(),
+            status: "done".into(),
+            action: "pi done".into(),
+            workspace: String::new(),
+            project: String::new(),
+            socket: "/home/me/.config/herdr/it's.sock".into(),
+            session: None,
+        };
+        let click = BridgeClick {
+            control: PathBuf::from("/tmp/state dir/bridge-control.sock"),
+            key: "me@donut:22".into(),
+        };
+        assert_eq!(
+            bridge_click_command(Path::new("/bin/herdr-cast"), &click, &notification),
+            "'/bin/herdr-cast' 'bridge-focus' '/tmp/state dir/bridge-control.sock' \
+             'me@donut:22' '' '/home/me/.config/herdr/it'\\''s.sock' 'w1:p1;echo bad'"
+        );
     }
 
     #[test]

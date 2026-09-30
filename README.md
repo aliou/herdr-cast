@@ -122,7 +122,15 @@ herdr-cast bridge ── ssh ──▶ herdr-cast bridge-relay ◀── ~/.loca
   and tailnet address) takes the socket over and the first one idles.
 - The host applies a notification through the status's `HerdrNotify` bundle
   with the `PROJECT@HOST` layout, grouped per host and pane, and a pasteboard
-  copy through `pbcopy`. Clicking a bridged notification raises Ghostty.
+  copy through `pbcopy`.
+- Clicking a bridged notification runs `herdr-cast bridge-focus`. It asks the
+  host daemon, through `bridge-control.sock` in the plugin state directory,
+  to focus the pane over the existing link: the relay calls `agent.focus` on
+  the Herdr socket the notification came from. Then it raises the Ghostty
+  tab showing that machine and session, matched by the tab's foreground
+  pid: the newest `herdr --remote` client attached to the notification's
+  session (or its parent, such as `sbxctl herdr`), else the newest client
+  of that machine. Without a match it only activates Ghostty.
 
 Senders try the bridge first and fall back when there is no socket or the
 host does not ack in time, so an old host, an unreachable host, or a remote
@@ -581,6 +589,7 @@ Herdr's API.
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
   `forward-notify`, `bridge-start`, `bridge`, `bridge-relay`, `bridge-send`,
+  `bridge-focus`,
   `focus`, `pane-focused`, `daemon`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
   `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`

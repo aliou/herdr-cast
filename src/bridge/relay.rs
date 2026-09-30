@@ -17,9 +17,12 @@ use std::time::{Duration, Instant};
 
 use super::wire::{self, Frame, WireError};
 use super::{ACK_TIMEOUT, HELLO_TIMEOUT, PING_DEADLINE, SEND_TIMEOUT};
+use crate::api::SocketClient;
 
 /// How long the accept loop waits before re-checking its exit conditions.
 const TICK_MS: i32 = 200;
+/// A focus request's Herdr call; below the host's wait for the ack.
+const FOCUS_TIMEOUT: Duration = Duration::from_secs(2);
 
 static SIGNALED: AtomicBool = AtomicBool::new(false);
 static BIND_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -55,7 +58,7 @@ pub fn serve<R: Read + Send + 'static, W: Write>(
 ) -> Result<(), String> {
     let events = spawn_reader(input);
     let host = super::this_host();
-    wire::write_frame(&mut output, &super::hello(&host), None)
+    wire::write_frame(&mut output, &super::hello(&host, &[wire::KIND_FOCUS]), None)
         .map_err(|error| format!("failed to greet the host: {error}"))?;
     let host_kinds = match events.recv_timeout(HELLO_TIMEOUT) {
         Ok(Event::Frame(Frame::Hello { v, kinds, .. })) if v == wire::VERSION => kinds,
@@ -156,15 +159,34 @@ impl<W: Write> Relay<W> {
         }
     }
 
-    /// Record an event that arrived outside a request: pings refresh the
-    /// deadline, a closed link ends the relay, stray acks are dropped.
+    /// Handle a host event: pings refresh the deadline, focus requests run
+    /// and are acked, a closed link ends the relay, stray acks are dropped.
     fn note(&mut self, event: Event) {
         match event {
             Event::Frame(Frame::Ping { .. }) => self.last_ping = Instant::now(),
+            Event::Frame(Frame::Focus { id, socket, pane }) => self.focus(id, &socket, &pane),
             Event::Frame(_) => {}
             Event::Closed(reason) => {
                 self.closed.get_or_insert(reason);
             }
+        }
+    }
+
+    fn focus(&mut self, id: u64, socket: &str, pane: &str) {
+        let result = SocketClient::with_timeout(socket, FOCUS_TIMEOUT)
+            .send(
+                "cast:bridge-focus",
+                "agent.focus",
+                serde_json::json!({ "target": pane }),
+            )
+            .map(|_| ());
+        match &result {
+            Ok(()) => log(&format!("focused {pane}")),
+            Err(error) => log(&format!("failed to focus {pane}: {error}")),
+        }
+        if let Err(error) = wire::write_frame(&mut self.output, &Frame::ack(id, result), None) {
+            self.closed
+                .get_or_insert_with(|| format!("host link write failed: {error}"));
         }
     }
 

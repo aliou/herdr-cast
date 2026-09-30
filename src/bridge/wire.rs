@@ -14,12 +14,14 @@ pub const MAX_BODY: usize = 1024 * 1024;
 
 pub const KIND_NOTIFY: &str = "notify";
 pub const KIND_PASTEBOARD: &str = "pasteboard";
+pub const KIND_FOCUS: &str = "focus";
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Frame {
-    /// First frame in both directions on the ssh link.
+    /// First frame in both directions on the ssh link. `kinds` lists the
+    /// requests the sending side accepts.
     Hello {
         v: u32,
         host: String,
@@ -39,6 +41,28 @@ pub enum Frame {
         id: u64,
         mime: String,
         len: usize,
+    },
+    /// Host to relay: focus `pane` on the Herdr server behind `socket`.
+    Focus {
+        id: u64,
+        socket: String,
+        pane: String,
+    },
+    /// Notification click to the host daemon's control socket: focus a
+    /// remote pane on the machine behind link `key`.
+    FocusRequest {
+        key: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<String>,
+        socket: String,
+        pane: String,
+    },
+    /// Host daemon to the click: the pids of the Ghostty tabs to try, best
+    /// first, and the remote focus error, if any.
+    FocusReply {
+        pids: Vec<u32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     Ack {
         id: u64,
@@ -60,6 +84,12 @@ pub struct Notification {
     pub workspace: String,
     #[serde(default)]
     pub project: String,
+    /// The sender's Herdr socket, so a click can focus the pane.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub socket: String,
+    /// The sender's named session; absent for the default session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
 }
 
 impl Frame {
@@ -67,7 +97,7 @@ impl Frame {
     pub fn request_id(&self) -> Option<u64> {
         match self {
             Frame::Notify(notification) => Some(notification.id),
-            Frame::Pasteboard { id, .. } => Some(*id),
+            Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => Some(*id),
             _ => None,
         }
     }
@@ -76,7 +106,7 @@ impl Frame {
     pub fn with_request_id(mut self, new_id: u64) -> Self {
         match &mut self {
             Frame::Notify(notification) => notification.id = new_id,
-            Frame::Pasteboard { id, .. } => *id = new_id,
+            Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => *id = new_id,
             _ => {}
         }
         self
@@ -87,6 +117,7 @@ impl Frame {
         match self {
             Frame::Notify(_) => Some(KIND_NOTIFY),
             Frame::Pasteboard { .. } => Some(KIND_PASTEBOARD),
+            Frame::Focus { .. } => Some(KIND_FOCUS),
             _ => None,
         }
     }
@@ -217,7 +248,15 @@ pub fn write_frame(writer: &mut impl Write, frame: &Frame, body: Option<&[u8]>) 
 fn known_kind(kind: &str) -> bool {
     matches!(
         kind,
-        "hello" | "ping" | "bye" | "notify" | "pasteboard" | "ack"
+        "hello"
+            | "ping"
+            | "bye"
+            | "notify"
+            | "pasteboard"
+            | "focus"
+            | "focus_request"
+            | "focus_reply"
+            | "ack"
     )
 }
 
@@ -235,6 +274,8 @@ mod tests {
             action: "pi done".into(),
             workspace: "cast".into(),
             project: "herdr-cast".into(),
+            socket: "/Users/me/.config/herdr/herdr.sock".into(),
+            session: Some("work".into()),
         })
     }
 
@@ -269,6 +310,30 @@ mod tests {
                 Some(text),
             ),
             (Frame::ack(8, Err("boom".into())), None),
+            (
+                Frame::Focus {
+                    id: 9,
+                    socket: "/tmp/h.sock".into(),
+                    pane: "w1:p1".into(),
+                },
+                None,
+            ),
+            (
+                Frame::FocusRequest {
+                    key: "me@donut:22".into(),
+                    session: None,
+                    socket: "/tmp/h.sock".into(),
+                    pane: "w1:p1".into(),
+                },
+                None,
+            ),
+            (
+                Frame::FocusReply {
+                    pids: vec![11609, 11505],
+                    error: None,
+                },
+                None,
+            ),
             (
                 Frame::Bye {
                     reason: "replaced".into(),
@@ -346,6 +411,20 @@ mod tests {
         }
         let (frame, _) = read_frame(&mut reader).unwrap().unwrap();
         assert_eq!(frame, Frame::Ping { seq: 2 });
+    }
+
+    #[test]
+    fn notifications_from_older_senders_still_parse() {
+        let mut bytes =
+            br#"{"kind":"notify","id":1,"host":"h","pane":"p","status":"done","action":"a"}"#
+                .to_vec();
+        bytes.push(b'\n');
+        let (frame, _) = read_frame(&mut Cursor::new(bytes)).unwrap().unwrap();
+        let Frame::Notify(notification) = frame else {
+            panic!("expected a notification");
+        };
+        assert_eq!(notification.socket, "");
+        assert_eq!(notification.session, None);
     }
 
     #[test]

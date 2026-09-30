@@ -34,6 +34,8 @@ const PING_DEADLINE: Duration = Duration::from_secs(45);
 
 const LOCK_NAME: &str = "bridge.lock";
 const LOG_NAME: &str = "bridge.log";
+/// The host daemon's socket for notification clicks.
+const CONTROL_NAME: &str = "bridge-control.sock";
 
 /// Where senders and the relay meet on a remote machine. Fixed so neither
 /// side needs configuration; it exists only while a host is connected.
@@ -129,6 +131,7 @@ fn parse_send(arguments: &[String]) -> Result<SendRequest, String> {
     const USAGE: &str = concat!(
         "usage: herdr-cast bridge-send [--socket <path>] notify --status <status> ",
         "--action <text> [--workspace <label>] [--project <name>] [--pane <id>]\n",
+        "       [--herdr-socket <path>] [--session <name>]\n",
         "       herdr-cast bridge-send [--socket <path>] pasteboard < text"
     );
     let mut socket = None;
@@ -141,6 +144,8 @@ fn parse_send(arguments: &[String]) -> Result<SendRequest, String> {
         action: String::new(),
         workspace: String::new(),
         project: String::new(),
+        socket: String::new(),
+        session: None,
     };
     let mut iterator = arguments.iter();
     while let Some(argument) = iterator.next() {
@@ -159,6 +164,11 @@ fn parse_send(arguments: &[String]) -> Result<SendRequest, String> {
             "--workspace" => &mut notification.workspace,
             "--project" => &mut notification.project,
             "--pane" => &mut notification.pane,
+            "--herdr-socket" => &mut notification.socket,
+            "--session" => {
+                notification.session = Some(iterator.next().ok_or(USAGE)?.clone());
+                continue;
+            }
             _ => return Err(USAGE.to_string()),
         };
         *slot = iterator.next().ok_or(USAGE)?.clone();
@@ -173,14 +183,44 @@ fn parse_send(arguments: &[String]) -> Result<SendRequest, String> {
     Ok(SendRequest { socket, frame })
 }
 
-fn hello(host: &str) -> Frame {
+/// `bridge-focus <control> <key> <session> <socket> <pane>`: the click on a
+/// bridged notification. Asks the host daemon to focus the remote pane,
+/// then raises the Ghostty tab attached to that machine and session. An
+/// empty `session` means the remote's default session. Never fails the
+/// click: problems go to the bridge log and Ghostty is raised regardless.
+pub fn focus_command(arguments: Vec<String>) -> Result<(), String> {
+    const USAGE: &str =
+        "usage: herdr-cast bridge-focus <control-socket> <key> <session> <herdr-socket> <pane>";
+    let [control, key, session, socket, pane] = arguments.as_slice() else {
+        return Err(USAGE.to_string());
+    };
+    let control = PathBuf::from(control);
+    let request = Frame::FocusRequest {
+        key: key.clone(),
+        session: (!session.is_empty()).then(|| session.clone()),
+        socket: socket.clone(),
+        pane: pane.clone(),
+    };
+    let pids = match host::request_focus(&control, &request) {
+        Ok((pids, None)) => pids,
+        Ok((pids, Some(error))) => {
+            host::append_log(&control, &format!("click on {key} {pane}: {error}"));
+            pids
+        }
+        Err(error) => {
+            host::append_log(&control, &format!("click on {key} {pane}: {error}"));
+            Vec::new()
+        }
+    };
+    crate::notify::raise_ghostty_tab(&pids);
+    Ok(())
+}
+
+fn hello(host: &str, kinds: &[&str]) -> Frame {
     Frame::Hello {
         v: wire::VERSION,
         host: host.to_string(),
-        kinds: vec![
-            wire::KIND_NOTIFY.to_string(),
-            wire::KIND_PASTEBOARD.to_string(),
-        ],
+        kinds: kinds.iter().map(|kind| kind.to_string()).collect(),
     }
 }
 
@@ -225,6 +265,7 @@ mod tests {
         relay: JoinHandle<Result<(), String>>,
         host: JoinHandle<Outcome>,
         applied: Applied,
+        port: Arc<tunnel::Port>,
     }
 
     /// A relay and a host session joined by a socket pair in place of ssh.
@@ -239,8 +280,10 @@ mod tests {
             std::thread::spawn(move || relay::serve(relay_end, output, &socket, &stop))
         };
         let applied: Applied = Arc::default();
+        let port = Arc::new(tunnel::Port::default());
         let host = {
             let applied = Arc::clone(&applied);
+            let port = Arc::clone(&port);
             std::thread::spawn(move || {
                 let apply = move |frame: &Frame, body: Option<Vec<u8>>| {
                     if body.as_deref() == Some(reject) {
@@ -250,14 +293,7 @@ mod tests {
                     Ok(())
                 };
                 let reader = host_end.try_clone().unwrap();
-                tunnel::run(
-                    reader,
-                    host_end,
-                    "test",
-                    &apply,
-                    &AtomicBool::new(false),
-                    &|_| {},
-                )
+                tunnel::run(reader, host_end, "test", &apply, &port, &|_| {})
             })
         };
         wait_for(|| socket.exists());
@@ -266,6 +302,7 @@ mod tests {
             relay,
             host,
             applied,
+            port,
         }
     }
 
@@ -298,6 +335,8 @@ mod tests {
             action: "pi done".into(),
             workspace: "cast".into(),
             project: "herdr-cast".into(),
+            socket: "/tmp/herdr.sock".into(),
+            session: None,
         }
     }
 
@@ -382,11 +421,66 @@ mod tests {
         let mut reader = std::io::BufReader::new(host_end.try_clone().unwrap());
         let (greeting, _) = wire::read_frame(&mut reader).unwrap().unwrap();
         assert!(matches!(greeting, Frame::Hello { .. }));
-        wire::write_frame(&mut &host_end, &hello("host"), None).unwrap();
+        wire::write_frame(&mut &host_end, &hello("host", &[wire::KIND_NOTIFY]), None).unwrap();
         wait_for(|| socket.exists());
         host_end.shutdown(std::net::Shutdown::Write).unwrap();
         relay.join().unwrap().unwrap();
         assert!(!socket.exists());
+        let _ = std::fs::remove_dir_all(socket.parent().unwrap());
+    }
+
+    /// A one-shot stand-in for a Herdr server socket that records the
+    /// request and answers with an empty result.
+    fn fake_herdr(socket: &Path) -> JoinHandle<serde_json::Value> {
+        let listener = std::os::unix::net::UnixListener::bind(socket).unwrap();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, Write};
+            let (mut connection, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            std::io::BufReader::new(&connection)
+                .read_line(&mut line)
+                .unwrap();
+            connection
+                .write_all(b"{\"id\":\"cast:bridge-focus\",\"result\":{}}\n")
+                .unwrap();
+            serde_json::from_str(&line).unwrap()
+        })
+    }
+
+    #[test]
+    fn the_host_focuses_remote_panes_through_the_link() {
+        let socket = test_socket("focus");
+        let harness = start(&socket, b"");
+        let herdr = socket.with_file_name("h.sock");
+        let server = fake_herdr(&herdr);
+
+        let focus = |herdr: &Path| {
+            harness.port.request(Frame::Focus {
+                id: 0,
+                socket: herdr.to_string_lossy().into_owned(),
+                pane: "w2:p3".into(),
+            })
+        };
+        focus(&herdr).unwrap();
+        let request = server.join().unwrap();
+        assert_eq!(request["method"], "agent.focus");
+        assert_eq!(request["params"]["target"], "w2:p3");
+
+        let missing = focus(&socket.with_file_name("gone.sock"));
+        assert!(
+            missing
+                .as_ref()
+                .is_err_and(|error| error.contains("failed to connect")),
+            "{missing:?}"
+        );
+
+        harness.stop.store(true, Ordering::SeqCst);
+        harness.relay.join().unwrap().unwrap();
+        harness.host.join().unwrap();
+        assert!(
+            focus(&herdr).is_err_and(|error| error.contains("not connected")),
+            "a closed link refuses requests"
+        );
         let _ = std::fs::remove_dir_all(socket.parent().unwrap());
     }
 
@@ -403,6 +497,15 @@ mod tests {
         };
         assert_eq!(notification.status, "blocked");
         assert_eq!(notification.pane, "p9");
+        let request = parse_send(&arguments(
+            "notify --status done --action a --herdr-socket /tmp/h.sock --session work",
+        ))
+        .unwrap();
+        let Some(Frame::Notify(notification)) = request.frame else {
+            panic!("expected a notification");
+        };
+        assert_eq!(notification.socket, "/tmp/h.sock");
+        assert_eq!(notification.session.as_deref(), Some("work"));
         assert!(parse_send(&arguments("pasteboard"))
             .unwrap()
             .frame

@@ -6,13 +6,49 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+/// One running `herdr --remote` client.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Client {
+    pub pid: u32,
+    pub ppid: u32,
+    /// Seconds since the client started.
+    pub age: u64,
+    pub target: String,
+    /// `--session <name>`; absent for the remote's default session.
+    pub session: Option<String>,
+}
+
 /// Running remote clients, grouped by the machine ssh would reach.
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Wanted {
     /// The first target string seen for this machine; used for ssh.
     pub target: String,
-    /// Pids of the `herdr --remote` clients for this machine.
-    pub pids: BTreeSet<u32>,
+    pub clients: Vec<Client>,
+}
+
+impl Wanted {
+    pub fn pids(&self) -> BTreeSet<u32> {
+        self.clients.iter().map(|client| client.pid).collect()
+    }
+
+    /// Pids that may own the Ghostty tab of a client attached to `session`,
+    /// best first: clients of that session before any other client of this
+    /// machine, newest first within each group. Each client offers its own
+    /// pid (Ghostty reports a tab's foreground process) and then its
+    /// parent's (a wrapper such as `sbxctl herdr` in the foreground).
+    pub fn tab_pids(&self, session: Option<&str>) -> Vec<u32> {
+        let mut clients: Vec<&Client> = self.clients.iter().collect();
+        clients.sort_by_key(|client| (client.session.as_deref() != session, client.age));
+        let mut pids = Vec::new();
+        for client in clients {
+            for pid in [client.pid, client.ppid] {
+                if pid > 1 && !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+        pids
+    }
 }
 
 /// Resolves and caches target strings to ssh's effective destination.
@@ -24,7 +60,7 @@ pub struct Resolver {
 impl Resolver {
     pub fn scan(&mut self) -> Result<BTreeMap<String, Wanted>, String> {
         let output = Command::new("/bin/ps")
-            .args(["-axo", "pid=,args="])
+            .args(["-axo", "pid=,ppid=,etime=,args="])
             .stdin(Stdio::null())
             .stderr(Stdio::null())
             .output()
@@ -33,16 +69,16 @@ impl Resolver {
             return Err(format!("ps failed with {}", output.status));
         }
         let mut wanted: BTreeMap<String, Wanted> = BTreeMap::new();
-        for (pid, target) in String::from_utf8_lossy(&output.stdout)
+        for client in String::from_utf8_lossy(&output.stdout)
             .lines()
             .filter_map(parse_line)
         {
-            let key = self.key(&target);
+            let key = self.key(&client.target);
             let entry = wanted.entry(key).or_default();
             if entry.target.is_empty() {
-                entry.target = target;
+                entry.target = client.target.clone();
             }
-            entry.pids.insert(pid);
+            entry.clients.push(client);
         }
         Ok(wanted)
     }
@@ -67,26 +103,56 @@ impl Resolver {
     }
 }
 
-/// `(pid, target)` from one `ps -axo pid=,args=` line, when it is a herdr
-/// client started with `--remote <target>` or `--remote=<target>`.
-pub fn parse_line(line: &str) -> Option<(u32, String)> {
+/// A herdr client started with `--remote <target>` (or `--remote=<target>`)
+/// from one `ps -axo pid=,ppid=,etime=,args=` line.
+pub fn parse_line(line: &str) -> Option<Client> {
     let mut words = line.split_whitespace();
     let pid = words.next()?.parse().ok()?;
+    let ppid = words.next()?.parse().ok()?;
+    let age = parse_elapsed(words.next()?)?;
     let program = words.next()?;
     if Path::new(program).file_name()? != "herdr" {
         return None;
     }
-    while let Some(word) = words.next() {
-        let target = match word.strip_prefix("--remote") {
-            Some("") => words.next(),
+    let arguments: Vec<&str> = words.collect();
+    let target = flag_value(&arguments, "--remote")?;
+    Some(Client {
+        pid,
+        ppid,
+        age,
+        target,
+        session: flag_value(&arguments, "--session"),
+    })
+}
+
+/// The value of `--flag value` or `--flag=value`, when it is not another
+/// flag.
+fn flag_value(arguments: &[&str], flag: &str) -> Option<String> {
+    let mut iterator = arguments.iter();
+    while let Some(argument) = iterator.next() {
+        let value = match argument.strip_prefix(flag) {
+            Some("") => iterator.next().copied(),
             Some(rest) => rest.strip_prefix('='),
             None => continue,
         };
-        return target
-            .filter(|target| !target.is_empty() && !target.starts_with('-'))
-            .map(|target| (pid, target.to_string()));
+        return value
+            .filter(|value| !value.is_empty() && !value.starts_with('-'))
+            .map(str::to_string);
     }
     None
+}
+
+/// Seconds from `ps` elapsed time: `[[dd-]hh:]mm:ss`.
+fn parse_elapsed(value: &str) -> Option<u64> {
+    let (days, clock) = match value.split_once('-') {
+        Some((days, clock)) => (days.parse::<u64>().ok()?, clock),
+        None => (0, value),
+    };
+    let mut seconds = 0;
+    for part in clock.split(':') {
+        seconds = seconds * 60 + part.parse::<u64>().ok()?;
+    }
+    Some(days * 86_400 + seconds)
 }
 
 /// `user@hostname:port` from `ssh -G` output.
@@ -109,38 +175,81 @@ pub fn parse_ssh_config(output: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn client(pid: u32, ppid: u32, age: u64, session: Option<&str>) -> Client {
+        Client {
+            pid,
+            ppid,
+            age,
+            target: "donut".into(),
+            session: session.map(str::to_string),
+        }
+    }
+
     #[test]
-    fn finds_remote_clients_and_their_targets() {
+    fn finds_remote_clients_with_their_session_and_age() {
         assert_eq!(
             parse_line(
-                "47424 herdr --remote aliou.freelancer@192.168.1.16 --remote-keybindings server"
+                "47424 16508 01:02:03 herdr --remote aliou.freelancer@192.168.1.16 --remote-keybindings server"
             ),
-            Some((47424, "aliou.freelancer@192.168.1.16".to_string()))
+            Some(Client {
+                pid: 47424,
+                ppid: 16508,
+                age: 3723,
+                target: "aliou.freelancer@192.168.1.16".into(),
+                session: None,
+            })
         );
         assert_eq!(
-            parse_line(" 11609 /etc/profiles/per-user/me/bin/herdr --remote=donut"),
-            Some((11609, "donut".to_string()))
+            parse_line(" 11609 11505 2-00:00:05 /etc/profiles/per-user/me/bin/herdr --remote=donut --session work"),
+            Some(Client {
+                pid: 11609,
+                ppid: 11505,
+                age: 2 * 86_400 + 5,
+                target: "donut".into(),
+                session: Some("work".into()),
+            })
+        );
+        assert_eq!(
+            parse_line("1 2 00:07 herdr --session=a --remote donut")
+                .and_then(|client| client.session),
+            Some("a".into())
         );
     }
 
     #[test]
     fn ignores_everything_else() {
         for line in [
-            "2242 /etc/profiles/per-user/me/bin/herdr server",
-            "2241 herdr",
-            "47465 /etc/profiles/per-user/me/bin/herdr client",
-            "8547 herdr session attach factorial",
-            "9000 herdr remote-client-bridge",
-            "9001 herdr --remote-keybindings server",
-            "9002 herdr --remote",
-            "9003 herdr --remote --remote-keybindings server",
-            "9004 herdr-cast bridge-send --remote donut",
-            "9005 ssh -C -T donut herdr --remote donut",
-            "10916 node sbxctl.cjs herdr stellar-lee-adama",
-            "not-a-pid herdr --remote donut",
+            "2242 1 10:00 /etc/profiles/per-user/me/bin/herdr server",
+            "2241 1 10:00 herdr",
+            "47465 1 10:00 /etc/profiles/per-user/me/bin/herdr client",
+            "8547 1 10:00 herdr session attach factorial",
+            "9000 1 10:00 herdr remote-client-bridge",
+            "9001 1 10:00 herdr --remote-keybindings server",
+            "9002 1 10:00 herdr --remote",
+            "9003 1 10:00 herdr --remote --remote-keybindings server",
+            "9004 1 10:00 herdr-cast bridge-send --remote donut",
+            "9005 1 10:00 ssh -C -T donut herdr --remote donut",
+            "10916 1 10:00 node sbxctl.cjs herdr stellar-lee-adama",
+            "not-a-pid 1 10:00 herdr --remote donut",
+            "9006 1 bogus herdr --remote donut",
         ] {
             assert_eq!(parse_line(line), None, "matched {line:?}");
         }
+    }
+
+    #[test]
+    fn prefers_the_newest_client_of_the_notifying_session() {
+        let wanted = Wanted {
+            target: "donut".into(),
+            clients: vec![
+                client(100, 90, 50, None),
+                client(200, 190, 10, None),
+                client(300, 290, 5, Some("work")),
+            ],
+        };
+        assert_eq!(wanted.tab_pids(None), [200, 190, 100, 90, 300, 290]);
+        assert_eq!(wanted.tab_pids(Some("work")), [300, 290, 200, 190, 100, 90]);
+        assert_eq!(wanted.tab_pids(Some("gone")), [300, 290, 200, 190, 100, 90]);
     }
 
     #[test]
