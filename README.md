@@ -113,7 +113,10 @@ through the status's
 HerdrNotify bundle with pane grouping and the status sound; every other
 invocation passes through to the neutral bundle verbatim, so Herdr's own
 local toasts keep working. The package unpacks the `HerdrNotify*.app`
-bundles into `libexec/`, and `forward-notify` finds them relative to the
+bundles into `libexec/` for the client-context shim, and into the
+plugin root's `assets/` so a package-installed plugin can deliver
+locally without a checkout. `forward-notify` finds the `libexec/`
+bundles relative to the
 resolved herdr-cast executable, so no configuration is needed on any machine
 that has the package on `PATH`.
 

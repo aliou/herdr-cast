@@ -244,7 +244,8 @@ request/response contract.
   its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
   finds it under `assets/`; the Nix package also installs the whole
   `HerdrNotify*.app` set under `libexec/` for the client-context
-  `forward-notify` shim.
+  `forward-notify` shim and under `share/herdr-cast/plugin/assets/` so a
+  package-installed plugin root (no checkout) can deliver locally.
 - `assets/HerdrNotify-blocked.app` and `assets/HerdrNotify-done.app`:
   per-status notification identities, generated from the base bundle by
   `scripts/gen-notify-bundles.py` (composited status-dot icon, own bundle
