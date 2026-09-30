@@ -74,7 +74,9 @@ request/response contract.
   pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
   and manifest features actually used.
 - `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
-  `clear-notification`, `forward-notify`, `daemon`, `focus`, `palette`,
+  `clear-notification`, `forward-notify`, `daemon`, `forward-start`,
+  `forward-daemon`, `bridge-start`, `bridge`, `bridge-relay`, `bridge-send`,
+  `focus`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
   `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
   commands. The `palette`, `directory-workspace`, `workspace-picker`,
@@ -83,18 +85,43 @@ request/response contract.
   wait for a keypress before the popup closes.
   Background hooks, the resident daemon, and non-interactive commands never
   wait. `pane-focused` is the `pane.focused` coordinator: it runs the recency
-  log, notification clearing, and the title refresh independently, so one
-  failing feature never suppresses the others.
+  log, notification clearing, the title refresh, and the bridge daemon
+  check independently, so one failing feature never suppresses the others.
 - `src/events.rs`: typed parsing of the `HERDR_PLUGIN_EVENT_JSON` payload
   shared by every event hook (pane, workspace, and agent fields, with
   workspace ids accepted in every shape Herdr has emitted). Malformed events
   fail soft to absent fields.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
+- `src/daemon.rs`: shared plumbing for resident daemons: the state-dir
+  `flock` singleton (`acquire`, `is_held`), `spawn_detached` (detached
+  stdio and process group, optional size-capped stderr log), and the
+  machine `hostname`/`short_host` helpers every module uses.
+- `src/bridge/`: the host bridge. The host Mac's `bridge` daemon (one per
+  user via `bridge.lock`, spawned by the `bridge-start` startup hook and
+  re-ensured on `pane.focused`, logging to `bridge.log`) scans `/bin/ps`
+  every 3 seconds for `herdr --remote <target>` clients (`targets.rs`),
+  groups aliases by `ssh -G`, and keeps one `ssh -T -o BatchMode=yes -o
+  ControlPath=none <target> 'exec herdr-cast bridge-relay'` link per
+  machine (`host.rs`, `tunnel.rs`), with backoff, a hello deadline, a
+  60-second retry for remotes whose herdr-cast lacks the relay, and a park
+  state for a link whose socket another link took over. It exits after
+  sustained loss of its Herdr socket. The remote `bridge-relay`
+  (`relay.rs`) binds `~/.local/state/herdr-cast/bridge.sock` by rename
+  (atomic takeover), forwards one sender request at a time over stdio, and
+  replies with the host's ack; it exits on stdin EOF, a missed ping
+  deadline, a signal, or losing the socket inode, removing the socket
+  first and then sending `bye`. `send.rs` is the sender API used by
+  `notify` and the pasteboard watcher; `wire.rs` defines the frames (one
+  JSON header line plus a raw body of `len` bytes). The host applies
+  notifications through `notify::deliver_bridged` and pasteboard text
+  through `/usr/bin/pbcopy`. Linux builds keep the relay and sender and
+  leave the host inert.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
   macOS notifier registration, delivery, and pane-group removal,
-  `notification.show` forwarding (first on every platform; on macOS a
-  `shown` response skips local delivery, and on Linux it is the only path),
+  the delivery chain (bridge first, then `notification.show` on every
+  platform; on macOS a `shown` response skips local delivery, and on Linux
+  it is the last path), bridged delivery on the host (`deliver_bridged`),
   macOS
   click-to-focus, and the `forward-notify` receiver: the Nix
   package installs a `terminal-notifier` shim that execs this command so
@@ -106,9 +133,10 @@ request/response contract.
   in client context.
 - `src/forward/`: macOS-only pasteboard-to-client forwarding for Factorial.
   A startup hook starts a per-socket daemon that reads AppKit's pasteboard
-  change count and text through `objc2-app-kit`, then finds the focused
-  pane's tty from `pane.process_info` and its shell PID and writes OSC 52
-  to that pane. Non-macOS builds leave both commands inert.
+  change count and text through `objc2-app-kit` and sends each copy through
+  the bridge. Without a bridge it finds the focused pane's tty from
+  `pane.process_info` and its shell PID and writes OSC 52 to that pane.
+  Non-macOS builds leave both commands inert.
 - `src/palette.rs`: popup layout palette. It uses `layout.export` and
   `pane.move` to flip a two-pane split, owns the shared `pane.move`
   protocol types and the current-location lookup, dispatches "Move pane…"
@@ -261,7 +289,10 @@ variables including `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`,
 `HERDR_PLUGIN_CONTEXT_JSON`, and entrypoint-specific event or pane variables.
 The plugin has no config file or user-facing environment overrides. Personal
 behavior is hard-coded in `src/notify.rs`. Store runtime artifacts only in the
-injected state directory, never in the source checkout.
+injected state directory, never in the source checkout. The one exception is
+the bridge socket, `~/.local/state/herdr-cast/bridge.sock`: `bridge-relay`
+runs over ssh outside plugin context, and senders must find it without
+configuration.
 
 ## Development behavior
 
@@ -304,6 +335,24 @@ runtime invocation.
 - Keep Herdr enrichment and macOS focus detection best-effort. Detection
   failures must fail open so a duplicate notification is preferred over a
   silently missed notification.
+- Senders try the bridge first and keep every pre-bridge path as the
+  fallback: `notification.show` then the local notifier for notifications,
+  OSC 52 for pasteboard copies. A missing socket is the normal case on the
+  host itself and is not logged; every other bridge failure is logged and
+  falls back.
+- Only `bridge-relay` creates or removes the remote bridge socket. It removes
+  the socket only while the path still has its own inode, and before any
+  other I/O on exit. It never panics on stdio errors: write logs with
+  `let _ = writeln!(io::stderr(), ...)`, never `eprintln!`.
+- Only the host daemon starts ssh, always with `BatchMode=yes` and
+  `ControlPath=none`. Bridge targets come from running `herdr --remote`
+  processes; never store a machine list.
+- The host acks a bridge request only after applying it. Keep timeouts
+  ordered: notifier and pbcopy children (3 s) < relay ack wait (4 s) <
+  sender wait (5 s). Give notifier children a null stdin: terminal-notifier
+  reads its message from a non-terminal stdin and blocks.
+- Check the bridge body cap (1 MiB) before connecting on the sender and
+  before allocating on the reader.
 - Request terminal notifications through Herdr's `notification.show` socket
   method with `sound = "none"` on every platform. On macOS, skip the local
   notifier only when the server reports the notification shown to an attached

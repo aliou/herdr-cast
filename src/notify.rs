@@ -7,11 +7,18 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::api::SocketClient;
+use crate::bridge;
 
 const TRIGGER_STATUSES: &[&str] = &["blocked", "done"];
 const BLOCKED_SOUND: &str = "Glass";
 const DONE_SOUND: &str = "Funk";
 const ACTIVATE_APP: &str = "Ghostty";
+/// The app a bridged notification raises when clicked.
+const ACTIVATE_BUNDLE_ID: &str = "com.mitchellh.ghostty";
+/// A notifier child that has not exited by then is killed. Kept below the
+/// bridge relay's ack timeout so a slow notifier reads as a notifier
+/// failure rather than a lost host.
+const NOTIFIER_TIMEOUT: Duration = Duration::from_secs(3);
 const DEBOUNCE_SECONDS: u64 = 2;
 const REGISTER_TTL_SECONDS: u64 = 6 * 60 * 60;
 const OUTSTANDING_NOTIFICATION_PREFIX: &str = "outstanding-notification";
@@ -192,26 +199,7 @@ fn forward_argv(arguments: &[String]) -> ForwardDecision {
             project: payload.p.unwrap_or(""),
             host: payload.h,
         };
-        let (title, subtitle) = compose(&parts);
-        let mut argv = Vec::with_capacity(12);
-        argv.push("-title".to_string());
-        argv.push(title);
-        if let Some(subtitle) = subtitle {
-            argv.push("-subtitle".to_string());
-            argv.push(subtitle);
-        }
-        if let Some(group) = payload.g {
-            argv.push("-group".to_string());
-            argv.push(group.to_string());
-        }
-        if let Some(sound) = payload.s.and_then(sound_for_status) {
-            argv.push("-sound".to_string());
-            argv.push(sound.to_string());
-        }
-        if let Some(activate) = parsed.activate {
-            argv.push("-activate".to_string());
-            argv.push(activate.to_string());
-        }
+        let argv = notifier_argv(&parts, payload.g, payload.s, parsed.activate);
         return ForwardDecision { argv, variant };
     }
 
@@ -239,6 +227,134 @@ fn forward_argv(arguments: &[String]) -> ForwardDecision {
         argv.push(activate.to_string());
     }
     ForwardDecision { argv, variant }
+}
+
+/// The bundled notifier's arguments for the shared two-line layout, plus
+/// optional grouping, the status sound, and the app a click activates.
+fn notifier_argv(
+    parts: &NotificationParts,
+    group: Option<&str>,
+    status: Option<&str>,
+    activate: Option<&str>,
+) -> Vec<String> {
+    let (title, subtitle) = compose(parts);
+    let mut argv = vec!["-title".to_string(), title];
+    if let Some(subtitle) = subtitle {
+        argv.extend(["-subtitle".to_string(), subtitle]);
+    }
+    if let Some(group) = group {
+        argv.extend(["-group".to_string(), group.to_string()]);
+    }
+    if let Some(sound) = status.and_then(sound_for_status) {
+        argv.extend(["-sound".to_string(), sound.to_string()]);
+    }
+    if let Some(activate) = activate {
+        argv.extend(["-activate".to_string(), activate.to_string()]);
+    }
+    argv
+}
+
+/// Run the bundled notifier and wait for it. Stdin is closed because
+/// terminal-notifier reads its message from a non-terminal stdin and would
+/// otherwise block; a child still running after `NOTIFIER_TIMEOUT` is
+/// killed.
+fn run_notifier(notifier: &Path, argv: &[String]) -> Result<(), String> {
+    let mut child = Command::new(notifier)
+        .args(argv)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to start notifier: {error}"))?;
+    let status = wait_with_timeout(&mut child, NOTIFIER_TIMEOUT)
+        .ok_or_else(|| format!("notifier did not exit within {NOTIFIER_TIMEOUT:?}"))?;
+    if status.success() {
+        return Ok(());
+    }
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        use std::io::Read;
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+    Err(format!(
+        "notifier failed with {status}: {}",
+        truncate(&stderr.replace('\n', " "), 500)
+    ))
+}
+
+/// Wait for `child` up to `timeout`; kill and reap it past that.
+pub(crate) fn wait_with_timeout(
+    child: &mut std::process::Child,
+    timeout: Duration,
+) -> Option<std::process::ExitStatus> {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if let Ok(Some(status)) = child.try_wait() {
+            return Some(status);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    None
+}
+
+/// Deliver a notification that arrived through the bridge from another
+/// machine. Grouping is qualified by the origin host because pane ids repeat
+/// across machines.
+pub(crate) fn deliver_bridged(notification: &bridge::wire::Notification) -> Result<(), String> {
+    let paths = Paths::for_client()?;
+    let variant = bundle_variant(&notification.status);
+    let notifier = paths.notifier(variant);
+    if !notifier.is_file() {
+        return Err(format!(
+            "bundled notifier executable is missing (expected {})",
+            notifier.display()
+        ));
+    }
+    // Registration is kept current by the host daemon's loop
+    // (`prepare_bridged_delivery`): signing and Launch Services can take
+    // longer than the relay waits for an ack.
+    let host =
+        crate::daemon::short_host(&notification.host).unwrap_or_else(|| notification.host.clone());
+    let parts = NotificationParts {
+        action: &notification.action,
+        workspace: &notification.workspace,
+        project: &notification.project,
+        host: Some(&host),
+    };
+    let group = format!("{host}:{}", notification.pane);
+    let argv = notifier_argv(
+        &parts,
+        Some(&group),
+        Some(&notification.status),
+        Some(ACTIVATE_BUNDLE_ID),
+    );
+    run_notifier(&notifier, &argv)
+}
+
+/// Keep every notifier identity registered so bridged notifications never
+/// pay for signing and Launch Services registration inside the relay's ack
+/// window. Cheap while the registration TTL holds. Best-effort.
+pub(crate) fn prepare_bridged_delivery() {
+    let paths = match Paths::for_client() {
+        Ok(paths) => paths,
+        Err(error) => {
+            log(&error);
+            return;
+        }
+    };
+    if let Err(error) = fs::create_dir_all(&paths.state) {
+        log(&format!(
+            "failed to create notifier state directory: {error}"
+        ));
+        return;
+    }
+    for variant in [None, Some("blocked"), Some("done")] {
+        if paths.notifier(variant).is_file() {
+            ensure_notifier_registered(&paths, variant);
+        }
+    }
 }
 
 /// Parse Herdr's client notifier grammar strictly: every argument must be
@@ -280,6 +396,27 @@ fn sound_for_status(status: &str) -> Option<&'static str> {
     }
 }
 
+/// A triggered notification, enriched and past the debounce, ready for
+/// delivery.
+struct Pending {
+    pane_id: String,
+    status: String,
+    action: String,
+    workspace: String,
+    project: String,
+}
+
+impl Pending {
+    fn parts(&self) -> NotificationParts<'_> {
+        NotificationParts {
+            action: &self.action,
+            workspace: &self.workspace,
+            project: &self.project,
+            host: None,
+        }
+    }
+}
+
 pub fn run() -> Result<(), String> {
     let paths = Paths::from_environment()?;
     fs::create_dir_all(&paths.state)
@@ -289,30 +426,41 @@ pub fn run() -> Result<(), String> {
         log("dropped event without a parsable payload");
         return Ok(());
     };
-    let Some(pane_id) = event.pane_id() else {
-        log("dropped event without data.pane_id");
-        return Ok(());
-    };
-    let pane_id = pane_id.as_str();
-
     let socket_path = std::env::var("HERDR_SOCKET_PATH").ok();
     let client = socket_path
         .as_deref()
         .map(|path| SocketClient::with_timeout(path, Duration::from_millis(250)));
+    let Some(pending) = prepare(&paths, &event, client.as_ref())? else {
+        return Ok(());
+    };
+    deliver(&paths, socket_path.as_deref(), client.as_ref(), &pending)
+}
+
+/// Filter, enrich, and debounce one agent status event. `None` means the
+/// event does not notify.
+fn prepare(
+    paths: &Paths,
+    event: &crate::events::PluginEvent,
+    client: Option<&SocketClient>,
+) -> Result<Option<Pending>, String> {
+    let Some(pane_id) = event.pane_id() else {
+        log("dropped event without data.pane_id");
+        return Ok(None);
+    };
     let mut pane = Value::Null;
     let status = event.agent_status().or_else(|| {
-        pane = pane_info(client.as_ref(), pane_id);
+        pane = pane_info(client, &pane_id);
         string_at(&pane, "/result/pane/agent_status")
     });
     let Some(status) = status else {
         log("dropped event without an agent status");
-        return Ok(());
+        return Ok(None);
     };
     if !TRIGGER_STATUSES.contains(&status.as_str()) {
-        return Ok(());
+        return Ok(None);
     }
     if pane.is_null() {
-        pane = pane_info(client.as_ref(), pane_id);
+        pane = pane_info(client, &pane_id);
     }
 
     let workspace_id = event
@@ -325,7 +473,7 @@ pub fn run() -> Result<(), String> {
     let cwd = string_at(&pane, "/result/pane/cwd");
     let workspace = workspace_id
         .as_deref()
-        .and_then(|id| workspace_label(client.as_ref(), id))
+        .and_then(|id| workspace_label(client, id))
         .or_else(|| workspace_id.clone())
         .unwrap_or_default();
     let project = cwd
@@ -335,45 +483,69 @@ pub fn run() -> Result<(), String> {
         .unwrap_or_default()
         .to_string();
 
-    if is_debounced(&paths.state, pane_id, &status)? {
-        return Ok(());
+    if is_debounced(&paths.state, &pane_id, &status)? {
+        return Ok(None);
     }
     // The title/subtitle carry no status glyphs: the per-status bundle icon
     // and sound are the status signal.
     let action = match status.as_str() {
         "blocked" => format!("{agent} needs input"),
         "done" => format!("{agent} done"),
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
-    let parts = NotificationParts {
-        action: &action,
-        workspace: &workspace,
-        project: &project,
-        host: None,
-    };
+    Ok(Some(Pending {
+        pane_id,
+        status,
+        action,
+        workspace,
+        project,
+    }))
+}
 
-    if cfg!(target_os = "macos") {
-        // Forward first: a headless server hands the notification to the
-        // attached client, which renders it through the forwarder, so a
-        // local delivery would only duplicate it there. When no client
-        // rendered it (the local desktop app, or a headless server nobody
-        // is attached to), fall back to the local notifier.
-        if !request_terminal_notification(client.as_ref(), pane_id, &status, &parts) {
-            let (title, subtitle) = compose(&parts);
-            deliver_macos_notification(
-                &paths,
-                socket_path.as_deref(),
-                pane_id,
-                &status,
-                title,
-                subtitle,
-            )?;
-        }
-    } else {
-        deliver_terminal_notification(client.as_ref(), pane_id, &status, &parts);
+/// Try each delivery path in order until one takes the notification:
+///
+/// 1. the bridge to the host Mac, when a relay socket exists on this
+///    machine;
+/// 2. the server's `notification.show`, which an attached client renders
+///    (through the forwarder on macOS clients);
+/// 3. on macOS, the local notifier, for the desktop app itself or a
+///    headless server nobody is attached to.
+fn deliver(
+    paths: &Paths,
+    socket_path: Option<&str>,
+    client: Option<&SocketClient>,
+    pending: &Pending,
+) -> Result<(), String> {
+    match bridge::send_notification(bridge::wire::Notification {
+        id: 0,
+        host: origin_host(),
+        pane: pending.pane_id.clone(),
+        status: pending.status.clone(),
+        action: pending.action.clone(),
+        workspace: pending.workspace.clone(),
+        project: pending.project.clone(),
+    }) {
+        Ok(()) => return Ok(()),
+        // The usual case on the host Mac itself; not worth a log line.
+        Err(bridge::Unavailable::NoSocket) => {}
+        Err(error) => log(&format!("bridge: {error}; using notification.show")),
     }
-
-    Ok(())
+    let parts = pending.parts();
+    if request_terminal_notification(client, &pending.pane_id, &pending.status, &parts) {
+        return Ok(());
+    }
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let (title, subtitle) = compose(&parts);
+    deliver_macos_notification(
+        paths,
+        socket_path,
+        &pending.pane_id,
+        &pending.status,
+        title,
+        subtitle,
+    )
 }
 
 fn deliver_macos_notification(
@@ -418,19 +590,9 @@ fn deliver_macos_notification(
         args.push(click_command(&current_exe, &socket_path, pane_id));
     }
 
-    match Command::new(&notifier).args(&args).output() {
-        Ok(output) if output.status.success() => {
-            mark_notification_outstanding(&paths.state, &group, status);
-        }
-        Ok(output) => {
-            let stderr = String::from_utf8_lossy(&output.stderr).replace('\n', " ");
-            log(&format!(
-                "notifier failed with {}: {}",
-                output.status,
-                truncate(&stderr, 500)
-            ));
-        }
-        Err(error) => log(&format!("failed to start notifier: {error}")),
+    match run_notifier(&notifier, &args) {
+        Ok(()) => mark_notification_outstanding(&paths.state, &group, status),
+        Err(error) => log(&error),
     }
 
     Ok(())
@@ -571,15 +733,6 @@ pub(crate) fn stable_hash(value: &str) -> u64 {
     hash
 }
 
-fn deliver_terminal_notification(
-    client: Option<&SocketClient>,
-    pane_id: &str,
-    status: &str,
-    parts: &NotificationParts,
-) {
-    request_terminal_notification(client, pane_id, status, parts);
-}
-
 /// Request a terminal notification through the server's `notification.show`.
 /// Returns whether the server reported it shown to an attached client shell;
 /// callers on platforms with a local notifier use that to skip a duplicate.
@@ -660,23 +813,7 @@ fn forwarded_body(pane_id: &str, status: &str, parts: &NotificationParts) -> Str
 /// the machine name. Falls back to `remote` when the hostname cannot be
 /// read so forwarded notifications never silently lose the origin marker.
 fn origin_host() -> String {
-    let mut buffer = [0u8; 256];
-    let result =
-        unsafe { libc::gethostname(buffer.as_mut_ptr() as *mut libc::c_char, buffer.len()) };
-    if result != 0 {
-        return "remote".to_string();
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    let host = String::from_utf8_lossy(&buffer[..end]);
-    let host = host.trim();
-    if host.is_empty() {
-        "remote".to_string()
-    } else {
-        host.to_string()
-    }
+    crate::daemon::hostname().unwrap_or_else(|| "remote".to_string())
 }
 
 pub fn focus(socket_path: &str, pane_id: &str) -> Result<(), String> {
@@ -876,6 +1013,17 @@ impl Paths {
             state: Self::state_dir(),
             assets,
         })
+    }
+
+    /// Client-context resolution for code that runs outside a plugin hook's
+    /// working directory: the packaged `libexec` bundles when present, else
+    /// the plugin root's `assets`.
+    fn for_client() -> Result<Self, String> {
+        let packaged = Self::from_executable()?;
+        if packaged.notifier(None).is_file() {
+            return Ok(packaged);
+        }
+        Self::from_environment()
     }
 
     fn state_dir() -> PathBuf {

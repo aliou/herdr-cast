@@ -26,6 +26,13 @@ command = ["herdr-cast", "sync-title"]
 [[startup]]
 command = ["herdr-cast", "forward-start"]
 
+# On the host Mac, start the bridge daemon that dials every machine a
+# `herdr --remote` client is attached to, so remote notifications and
+# pasteboard copies reach this Mac directly. The `pane.focused` coordinator
+# re-ensures it. The command no-ops on Linux.
+[[startup]]
+command = ["herdr-cast", "bridge-start"]
+
 # Fire a notification whenever a pane's agent status changes. The handler
 # filters to the hard-coded blocked and done statuses.
 [[events]]

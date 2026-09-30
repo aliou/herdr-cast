@@ -1,4 +1,5 @@
 mod api;
+mod bridge;
 mod daemon;
 mod events;
 mod forward;
@@ -39,6 +40,10 @@ fn main() {
         Some("clear-notification") if arguments.next().is_none() => notify::clear_from_event(),
         Some("notify") if arguments.next().is_none() => notify::run(),
         Some("forward-notify") => notify::forward(arguments.collect()),
+        Some("bridge-start") if arguments.next().is_none() => bridge::ensure(),
+        Some("bridge") if arguments.next().is_none() => bridge::host(),
+        Some("bridge-relay") => bridge::relay_command(arguments.collect()),
+        Some("bridge-send") => bridge::send_command(arguments.collect()),
         Some("palette") if arguments.next().is_none() => palette::run(),
         Some("directory-workspace") if arguments.next().is_none() => {
             workspace::create_from_directory()
@@ -72,7 +77,8 @@ fn main() {
             }
         }
         _ => Err(concat!(
-            "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|forward-start|forward-daemon|palette|directory-workspace",
+            "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|forward-start|forward-daemon",
+            "|bridge-start|bridge|bridge-relay|bridge-send|palette|directory-workspace",
             "|workspace-picker|lazygit|hunk|hunk-log|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
@@ -109,6 +115,9 @@ fn pane_focused_hook() -> Result<(), String> {
         eprintln!("[cast] dropped pane.focused event without data.pane_id");
     }
     if let Err(error) = title::sync_title() {
+        failures.push(error);
+    }
+    if let Err(error) = bridge::ensure() {
         failures.push(error);
     }
     if failures.is_empty() {
@@ -211,6 +220,10 @@ mod tests {
         assert!(!holds_popup_error("open-popup"));
         assert!(!holds_popup_error("focus"));
         assert!(!holds_popup_error("forward-notify"));
+        assert!(!holds_popup_error("bridge-start"));
+        assert!(!holds_popup_error("bridge"));
+        assert!(!holds_popup_error("bridge-relay"));
+        assert!(!holds_popup_error("bridge-send"));
         assert!(!holds_popup_error(""));
     }
 

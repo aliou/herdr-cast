@@ -95,13 +95,50 @@ from the original event on macOS. Linux terminal notifications are not
 click-to-focus. Event pane ids and workspace ids remain opaque; Cast does not
 substitute the currently focused pane.
 
+### Host bridge
+
+The bridge carries notifications and pasteboard copies from remote Herdr
+machines straight to the Mac running the Herdr client (the host). It does not
+depend on which pane or client is focused, and it uses its own protocol, not
+Herdr's.
+
+```text
+host Mac                                        remote machine
+herdr-cast bridge ── ssh ──▶ herdr-cast bridge-relay ◀── ~/.local/state/herdr-cast/bridge.sock ◀── notify hook, pasteboard watcher
+```
+
+- On the host, the `bridge-start` startup hook and the `pane.focused` hook
+  make sure one `herdr-cast bridge` daemon runs per user. Every 3 seconds it
+  lists running `herdr --remote <target>` clients and keeps one ssh link per
+  remote machine (`ssh -T -o BatchMode=yes <target> 'exec herdr-cast
+  bridge-relay'`). Aliases for one machine share a link (`ssh -G`). A link
+  closes within seconds of its last `herdr --remote` client exiting, and the
+  daemon exits when its Herdr server goes away. It logs to `bridge.log` in
+  the plugin state directory. Nothing runs on Linux hosts.
+- On the remote, `bridge-relay` owns `~/.local/state/herdr-cast/bridge.sock`
+  (mode 0600) while the link lives, forwards each request to the host, and
+  answers with the host's ack after the host applied it. It removes the
+  socket when the link ends. A second link to the same machine (say, its LAN
+  and tailnet address) takes the socket over and the first one idles.
+- The host applies a notification through the status's `HerdrNotify` bundle
+  with the `PROJECT@HOST` layout, grouped per host and pane, and a pasteboard
+  copy through `pbcopy`. Clicking a bridged notification raises Ghostty.
+
+Senders try the bridge first and fall back when there is no socket or the
+host does not ack in time, so an old host, an unreachable host, or a remote
+without a link keeps today's behavior. Bodies are capped at 1 MiB.
+
+For diagnostics, `herdr-cast bridge-send [--socket PATH] notify --status
+done --action 'pi done'` and `... pasteboard < file` send one request by
+hand and print `ok` or the reason it failed.
+
 ### Remote notification forwarding
 
-On macOS, Cast requests Herdr's `notification.show` first. When the server
+Without a bridge, Cast requests Herdr's `notification.show`. When the server
 reports the notification shown to an attached client shell, it skips local
 delivery; the notification has already rendered wherever Herdr's client runs.
 When nothing rendered it (the local desktop app, or a headless server nobody
-is attached to), Cast falls back to its local bundled notifier. On non-macOS
+is attached to), macOS falls back to its local bundled notifier. On non-macOS
 platforms, Cast only requests `notification.show` and has no local notifier.
 
 Herdr's macOS client renders `SystemToast` notifications by running whatever
@@ -123,12 +160,14 @@ that has the package on `PATH`.
 ### Pasteboard forwarding
 
 On Factorial (`factorial-machine`), Cast watches macOS's text pasteboard
-through AppKit. When it changes, Cast finds the focused Herdr pane's PTY and
-writes OSC 52 there. Herdr forwards that sequence to its foreground client,
-whether attached with `herdr --remote` or through an interactive SSH session.
+through AppKit. When it changes, Cast sends the text to the host through the
+bridge. Without a bridge, it finds the focused Herdr pane's PTY and writes
+OSC 52 there; Herdr forwards that sequence to its foreground client, whether
+attached with `herdr --remote` or through an interactive SSH session.
 Copies from native clipboard writers such as pi work without using `pbcopy`.
-Only text up to 192 KiB is forwarded; empty text and image-only changes are
-ignored. No watcher runs on Linux or other Macs.
+Text up to 1 MiB goes through the bridge and up to 192 KiB through OSC 52;
+empty text and image-only changes are ignored. No watcher runs on Linux or
+other Macs.
 
 Herdr does not expose its pane OSC 52 writes to plugins. If an app both writes
 the pasteboard and emits OSC 52, the client can receive the same copy twice.
@@ -541,12 +580,19 @@ Herdr's API.
 ## Architecture
 
 - `src/main.rs` dispatches the `notify`, `clear-notification`,
-  `forward-notify`, `focus`, `pane-focused`, `daemon`, `palette`,
+  `forward-notify`, `bridge-start`, `bridge`, `bridge-relay`, `bridge-send`,
+  `focus`, `pane-focused`, `daemon`, `palette`,
   `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
   `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
   commands.
 - `src/api.rs` implements newline-delimited JSON requests over Herdr's injected
   Unix socket.
+- `src/daemon.rs` holds the shared singleton lock, detached spawn, and
+  hostname helpers for resident daemons.
+- `src/bridge/` implements the host bridge: the frame format (`wire.rs`),
+  the remote relay (`relay.rs`), the sender (`send.rs`), the host's link
+  session (`tunnel.rs`), target discovery (`targets.rs`), and the host
+  daemon (`host.rs`).
 - `src/notify.rs` owns notification policy, state, the shared two-line
   layout assembly, macOS notifier registration (per bundle variant) and
   delivery and removal, Linux terminal notification requests, macOS
@@ -581,8 +627,9 @@ Herdr's API.
   `scripts/gen-notify-bundles.py` and committed.
 
 `herdr-plugin.toml` defines the startup hook, event subscriptions, pane
-entrypoints, popup sizes, and build command. Runtime artifacts live only in
-`HERDR_PLUGIN_STATE_DIR`.
+entrypoints, popup sizes, and build command. Runtime artifacts live in
+`HERDR_PLUGIN_STATE_DIR`, except the remote bridge socket under
+`~/.local/state/herdr-cast/`.
 
 ## Development
 

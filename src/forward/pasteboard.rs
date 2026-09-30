@@ -1,27 +1,30 @@
 //! Factorial pasteboard watcher. macOS native clients (including pi) write
 //! NSPasteboard without emitting a pane OSC 52 sequence. Poll `changeCount`
-//! and inject OSC 52 into a pane's PTY. Herdr captures that output and sends
-//! the copy to its foreground client without a custom socket method.
+//! and send each new text copy to the host Mac through the bridge. Without
+//! a bridge, inject OSC 52 into the focused pane's PTY instead; Herdr
+//! captures that output and sends the copy to its foreground client.
 
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
 use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
 
 use crate::api::SocketClient;
+use crate::bridge;
+use crate::daemon;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(300);
 const OSC52_GRACE_PERIOD: Duration = Duration::from_millis(200);
 const ECHO_WINDOW: Duration = Duration::from_secs(1);
 const SOCKET_TIMEOUT: Duration = Duration::from_millis(500);
-const MAX_TEXT_BYTES: usize = 192 * 1024;
+/// Herdr forwards OSC 52 through its client protocol; keep injected copies
+/// well under what that path carries. The bridge accepts larger bodies.
+const OSC52_MAX_BYTES: usize = 192 * 1024;
 
 /// A single watcher per Herdr session. Factorial is the only Mac on which
 /// this host-to-client bridge is currently wanted.
@@ -29,23 +32,10 @@ pub fn start() -> Result<(), String> {
     if !watch_this_host() {
         return Ok(());
     }
-    let socket = socket_path()?;
-    let lock_path = lock_path(&socket)?;
-    let lock = open_lock(&lock_path)?;
-    if try_lock(&lock) {
-        drop(lock);
-        let executable = std::env::current_exe()
-            .map_err(|error| format!("failed to resolve herdr-cast executable: {error}"))?;
-        Command::new(executable)
-            .arg("forward-daemon")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|error| format!("failed to spawn forwarding daemon: {error}"))?;
+    if daemon::is_held(&lock_path(&socket_path()?)?)? {
+        return Ok(());
     }
-    Ok(())
+    daemon::spawn_detached(&["forward-daemon"], None)
 }
 
 pub fn daemon() -> Result<(), String> {
@@ -53,16 +43,14 @@ pub fn daemon() -> Result<(), String> {
         return Ok(());
     }
     let socket = socket_path()?;
-    let lock = open_lock(&lock_path(&socket)?)?;
-    if !try_lock(&lock) {
+    let Some(_lock) = daemon::acquire(&lock_path(&socket)?)? else {
         return Ok(());
-    }
+    };
     let client = SocketClient::with_timeout(socket, SOCKET_TIMEOUT);
     let pasteboard = NSPasteboard::generalPasteboard();
-    let mut previous_count = pasteboard.changeCount();
+    let mut watcher = Watcher::new(&pasteboard);
     let mut socket_failures = 0;
     let mut idle_polls = 0;
-    let mut last_forwarded: Option<(String, Instant)> = None;
     loop {
         std::thread::sleep(POLL_INTERVAL);
         idle_polls += 1;
@@ -72,23 +60,55 @@ pub fn daemon() -> Result<(), String> {
                 return Ok(());
             }
         }
-        let count = pasteboard.changeCount();
-        if count == previous_count {
-            continue;
-        }
-        let last_count = previous_count;
-        previous_count = count;
-        // This symbol is supplied by AppKit. Only read the pasteboard text
-        // after a change; checking changeCount itself is cheap.
-        let Some(text) = pasteboard
-            .stringForType(unsafe { NSPasteboardTypeString })
-            .map(|value| value.to_string())
-            .filter(|text| !text.is_empty())
-        else {
+        let Some(text) = watcher.next_change(&pasteboard) else {
             continue;
         };
-        if text.len() > MAX_TEXT_BYTES {
-            continue;
+        match deliver(&client, &text) {
+            Ok(()) => watcher.delivered(text),
+            Err(error) => {
+                // There may be no runnable pane yet. Keep watching and retry
+                // this copy; only sustained socket loss stops the daemon.
+                watcher.retry();
+                eprintln!("[cast] clipboard forwarding failed: {error}");
+            }
+        }
+    }
+}
+
+/// Pasteboard change detection, separate from delivery.
+struct Watcher {
+    previous_count: isize,
+    last_count: isize,
+    last_forwarded: Option<(String, Instant)>,
+}
+
+impl Watcher {
+    fn new(pasteboard: &NSPasteboard) -> Self {
+        let previous_count = pasteboard.changeCount();
+        Self {
+            previous_count,
+            last_count: previous_count,
+            last_forwarded: None,
+        }
+    }
+
+    /// The pasteboard text to forward, if it changed since the last poll
+    /// and survives the size, grace-period, and echo filters.
+    fn next_change(&mut self, pasteboard: &NSPasteboard) -> Option<String> {
+        let count = pasteboard.changeCount();
+        if count == self.previous_count {
+            return None;
+        }
+        self.last_count = self.previous_count;
+        self.previous_count = count;
+        // This symbol is supplied by AppKit. Only read the pasteboard text
+        // after a change; checking changeCount itself is cheap.
+        let text = pasteboard
+            .stringForType(unsafe { NSPasteboardTypeString })
+            .map(|value| value.to_string())
+            .filter(|text| !text.is_empty())?;
+        if text.len() > bridge::wire::MAX_BODY {
+            return None;
         }
         // The pasteboard can change before a tool writes OSC 52. Give the
         // pane parser a moment to forward it before asking for the fallback.
@@ -96,26 +116,46 @@ pub fn daemon() -> Result<(), String> {
         if pasteboard.changeCount() != count {
             // The new value will be picked up on the next poll. Never send a
             // stale value over a more recent copy.
-            continue;
+            return None;
         }
         // A local Herdr client may write the forwarded copy straight back to
         // this Mac's pasteboard. Do not keep re-injecting that echo.
-        if last_forwarded
+        if self
+            .last_forwarded
             .as_ref()
             .is_some_and(|(sent, at)| sent == &text && at.elapsed() < ECHO_WINDOW)
         {
-            continue;
+            return None;
         }
-        match forward_to_focused_pane(&client, &text) {
-            Ok(()) => last_forwarded = Some((text, Instant::now())),
-            Err(error) => {
-                // There may be no runnable pane yet. Keep watching and retry
-                // this copy; only sustained socket loss stops the daemon.
-                previous_count = last_count;
-                eprintln!("[cast] clipboard forwarding failed: {error}");
-            }
-        }
+        Some(text)
     }
+
+    fn delivered(&mut self, text: String) {
+        self.last_forwarded = Some((text, Instant::now()));
+    }
+
+    /// Forget the last change so the next poll offers the same copy again.
+    fn retry(&mut self) {
+        self.previous_count = self.last_count;
+    }
+}
+
+/// Bridge first; OSC 52 into the focused pane when no bridge takes it. A
+/// copy too large for OSC 52 is dropped rather than retried.
+fn deliver(client: &SocketClient, text: &str) -> Result<(), String> {
+    match bridge::send_pasteboard(text) {
+        Ok(()) => return Ok(()),
+        Err(bridge::Unavailable::NoSocket) => {}
+        Err(error) => eprintln!("[cast] bridge: {error}; using OSC 52"),
+    }
+    if text.len() > OSC52_MAX_BYTES {
+        eprintln!(
+            "[cast] dropped a {} byte copy: too large for OSC 52",
+            text.len()
+        );
+        return Ok(());
+    }
+    forward_to_focused_pane(client, text)
 }
 
 /// `pane.process_info` exposes the focused pane's shell PID. macOS `ps`
@@ -172,18 +212,9 @@ fn socket_reachable(client: &SocketClient, failures: &mut u32) -> bool {
 }
 
 fn watch_this_host() -> bool {
-    if !cfg!(target_os = "macos") {
-        return false;
-    }
-    let mut name = [0u8; 256];
-    if unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) } != 0 {
-        return false;
-    }
-    let end = name
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(name.len());
-    String::from_utf8_lossy(&name[..end]).split('.').next() == Some("factorial-machine")
+    daemon::hostname()
+        .and_then(|host| daemon::short_host(&host))
+        .is_some_and(|host| host == "factorial-machine")
 }
 
 fn socket_path() -> Result<String, String> {
@@ -191,29 +222,10 @@ fn socket_path() -> Result<String, String> {
 }
 
 fn lock_path(socket: &str) -> Result<PathBuf, String> {
-    let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .ok_or_else(|| "HERDR_PLUGIN_STATE_DIR not set".to_string())?;
-    Ok(PathBuf::from(state_dir).join(format!(
+    Ok(daemon::state_dir()?.join(format!(
         "forward-{:016x}.lock",
         crate::notify::stable_hash(socket)
     )))
-}
-
-fn open_lock(path: &PathBuf) -> Result<File, String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create forwarding state directory: {error}"))?;
-    }
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(path)
-        .map_err(|error| format!("failed to open forwarding lock: {error}"))
-}
-
-fn try_lock(file: &File) -> bool {
-    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 #[cfg(test)]
