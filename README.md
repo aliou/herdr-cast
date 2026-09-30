@@ -97,11 +97,19 @@ substitute the currently focused pane.
 
 ### Remote notification forwarding
 
+On macOS, Cast requests Herdr's `notification.show` first. When the server
+reports the notification shown to an attached client shell, it skips local
+delivery; the notification has already rendered wherever Herdr's client runs.
+When nothing rendered it (the local desktop app, or a headless server nobody
+is attached to), Cast falls back to its local bundled notifier. On non-macOS
+platforms, Cast only requests `notification.show` and has no local notifier.
+
 Herdr's macOS client renders `SystemToast` notifications by running whatever
 `terminal-notifier` it finds on `PATH`. Cast's Nix package installs a shim
 binary under that name next to `herdr-cast`, which execs
-`herdr-cast forward-notify`: forwarded payloads (from Cast running on a remote
-Linux host) are rebuilt as native notifications through the status's
+`herdr-cast forward-notify`: forwarded payloads (from Cast running on a
+remote headless host, macOS or Linux) are rebuilt as native notifications
+through the status's
 HerdrNotify bundle with pane grouping and the status sound; every other
 invocation passes through to the neutral bundle verbatim, so Herdr's own
 local toasts keep working. The package unpacks the `HerdrNotify*.app`

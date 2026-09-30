@@ -353,15 +353,22 @@ pub fn run() -> Result<(), String> {
     };
 
     if cfg!(target_os = "macos") {
-        let (title, subtitle) = compose(&parts);
-        deliver_macos_notification(
-            &paths,
-            socket_path.as_deref(),
-            pane_id,
-            &status,
-            title,
-            subtitle,
-        )?;
+        // Forward first: a headless server hands the notification to the
+        // attached client, which renders it through the forwarder, so a
+        // local delivery would only duplicate it there. When no client
+        // rendered it (the local desktop app, or a headless server nobody
+        // is attached to), fall back to the local notifier.
+        if !request_terminal_notification(client.as_ref(), pane_id, &status, &parts) {
+            let (title, subtitle) = compose(&parts);
+            deliver_macos_notification(
+                &paths,
+                socket_path.as_deref(),
+                pane_id,
+                &status,
+                title,
+                subtitle,
+            )?;
+        }
     } else {
         deliver_terminal_notification(client.as_ref(), pane_id, &status, &parts);
     }
@@ -570,9 +577,21 @@ fn deliver_terminal_notification(
     status: &str,
     parts: &NotificationParts,
 ) {
+    request_terminal_notification(client, pane_id, status, parts);
+}
+
+/// Request a terminal notification through the server's `notification.show`.
+/// Returns whether the server reported it shown to an attached client shell;
+/// callers on platforms with a local notifier use that to skip a duplicate.
+fn request_terminal_notification(
+    client: Option<&SocketClient>,
+    pane_id: &str,
+    status: &str,
+    parts: &NotificationParts,
+) -> bool {
     let Some(client) = client else {
         log("HERDR_SOCKET_PATH is not set; cannot request terminal notification");
-        return;
+        return false;
     };
 
     // The socket-level title reads sensibly for a client that does not
@@ -601,8 +620,12 @@ fn deliver_terminal_notification(
                     .unwrap_or("unknown");
                 log(&format!("terminal notification was not shown: {reason}"));
             }
+            shown
         }
-        Err(error) => log(&format!("failed to request terminal notification: {error}")),
+        Err(error) => {
+            log(&format!("failed to request terminal notification: {error}"));
+            false
+        }
     }
 }
 

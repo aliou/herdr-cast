@@ -92,9 +92,11 @@ request/response contract.
 - `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
 - `src/notify.rs`: hard-coded personal notification behavior, event handling,
   state, Herdr enrichment, the shared two-line layout assembly (`compose`),
-  macOS notifier registration, delivery, and pane-group removal, Linux
-  terminal notification requests, macOS click-to-focus, and the
-  `forward-notify` receiver: the Nix
+  macOS notifier registration, delivery, and pane-group removal,
+  `notification.show` forwarding (first on every platform; on macOS a
+  `shown` response skips local delivery, and on Linux it is the only path),
+  macOS
+  click-to-focus, and the `forward-notify` receiver: the Nix
   package installs a `terminal-notifier` shim that execs this command so
   Herdr's macOS client renders forwarded remote payloads (layout parts,
   grouping, status from the v1 JSON body) through the status's HerdrNotify
@@ -301,8 +303,10 @@ runtime invocation.
 - Keep Herdr enrichment and macOS focus detection best-effort. Detection
   failures must fail open so a duplicate notification is preferred over a
   silently missed notification.
-- On non-macOS platforms, request terminal notifications through Herdr's
-  `notification.show` socket method with `sound = "none"`. Do not write OSC
+- Request terminal notifications through Herdr's `notification.show` socket
+  method with `sound = "none"` on every platform. On macOS, skip the local
+  notifier only when the server reports the notification shown to an attached
+  client. Do not write OSC
   directly to a pane PTY; Herdr owns the client notification path.
 - `terminal-notifier -execute` evaluates one command string through the system
   shell. Keep every generated argument single-quoted and unit-test paths and
