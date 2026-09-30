@@ -1,4 +1,5 @@
 mod api;
+mod daemon;
 mod events;
 mod forward;
 mod hunk;

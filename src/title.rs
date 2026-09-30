@@ -18,17 +18,13 @@
 //! socket path because the plugin state directory is shared across sessions,
 //! and one daemon must serve exactly one server.
 
-use std::fs::{File, OpenOptions};
-use std::io::Write;
-use std::os::unix::io::AsRawFd;
-use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
 use crate::api::SocketClient;
+use crate::daemon;
 use crate::session;
 
 /// The fragments that never change over a server's lifetime.
@@ -106,7 +102,10 @@ pub struct TitleContext {
 impl TitleContext {
     pub fn from_environment() -> Self {
         Self {
-            host: is_remote().then(hostname).flatten(),
+            host: is_remote()
+                .then(daemon::hostname)
+                .flatten()
+                .and_then(|host| daemon::short_host(&host)),
             session: non_empty(std::env::var("HERDR_SESSION").ok()),
         }
     }
@@ -165,19 +164,11 @@ pub fn daemon() -> Result<(), String> {
     let socket_path = socket_path()?;
     let lock_path = daemon_lock_path(&socket_path)
         .ok_or_else(|| "HERDR_PLUGIN_STATE_DIR not set".to_string())?;
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create plugin state directory: {error}"))?;
-    }
-    let mut lock = open_lock_file(&lock_path)?;
     // A daemon already owns this session's lock; the loser exits quietly so
     // a spawn race between two hooks cannot leave two pollers running.
-    if !try_lock(&lock) {
+    let Some(_lock) = daemon::acquire(&lock_path)? else {
         return Ok(());
-    }
-    // Diagnostics only; the lock is the source of truth.
-    let _ = lock.set_len(0);
-    let _ = writeln!(lock, "pid {}", std::process::id()).and_then(|_| lock.flush());
+    };
 
     let client = SocketClient::with_timeout(&socket_path, SOCKET_TIMEOUT);
     let context = TitleContext::from_environment();
@@ -221,31 +212,11 @@ pub fn ensure_daemon(socket_path: &str) -> Result<(), String> {
     let Some(lock_path) = daemon_lock_path(socket_path) else {
         return Ok(());
     };
-    if let Some(parent) = lock_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("failed to create plugin state directory: {error}"))?;
-    }
-    let probe = open_lock_file(&lock_path)?;
-    if !try_lock(&probe) {
+    if daemon::is_held(&lock_path)? {
         return Ok(());
     }
-    // Release the probe so the spawned daemon can take the lock itself. A
-    // concurrent spawner may win the lock race; the losing daemon exits.
-    drop(probe);
-
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("failed to resolve the herdr-cast path: {error}"))?;
-    // The daemon outlives this hook, so it must not inherit the hook's piped
-    // stdio (Herdr waits for those pipes to close) nor its process group.
-    Command::new(executable)
-        .arg("daemon")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .process_group(0)
-        .spawn()
-        .map_err(|error| format!("failed to spawn the title daemon: {error}"))?;
-    Ok(())
+    // A concurrent spawner may win the lock race; the losing daemon exits.
+    daemon::spawn_detached(&["daemon"], None)
 }
 
 /// Every pane in the session. The daemon reads the window title's inputs
@@ -295,25 +266,6 @@ fn is_remote() -> bool {
         .is_some()
 }
 
-fn hostname() -> Option<String> {
-    let mut buffer = [0u8; 256];
-    let result =
-        unsafe { libc::gethostname(buffer.as_mut_ptr().cast::<libc::c_char>(), buffer.len()) };
-    if result != 0 {
-        return None;
-    }
-    let end = buffer
-        .iter()
-        .position(|byte| *byte == 0)
-        .unwrap_or(buffer.len());
-    short_host(&String::from_utf8_lossy(&buffer[..end]))
-}
-
-/// The first DNS label, matching how the Space sidebar shortens hosts.
-fn short_host(host: &str) -> Option<String> {
-    non_empty(host.split('.').next().map(str::to_string))
-}
-
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
@@ -328,21 +280,6 @@ fn daemon_lock_path(socket_path: &str) -> Option<PathBuf> {
 
 fn stable_hash(value: &str) -> u64 {
     crate::notify::stable_hash(value)
-}
-
-fn open_lock_file(path: &PathBuf) -> Result<File, String> {
-    OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .open(path)
-        .map_err(|error| format!("failed to open the title daemon lock: {error}"))
-}
-
-/// Take the daemon lock without blocking. `flock` belongs to the open file
-/// description, so it dies with the holder's process and cannot go stale.
-fn try_lock(file: &File) -> bool {
-    unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) == 0 }
 }
 
 fn log(message: &str) {
@@ -399,17 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn short_host_keeps_only_the_first_label() {
-        assert_eq!(
-            short_host("buildbox.lab.internal").as_deref(),
-            Some("buildbox")
-        );
-        assert_eq!(short_host("buildbox").as_deref(), Some("buildbox"));
-        assert_eq!(short_host(""), None);
-        assert_eq!(short_host("   "), None);
-    }
-
-    #[test]
     fn title_request_matches_the_installed_protocol() {
         let request = ClientWindowTitleSetParams {
             title: "buildbox \u{203a} vim".into(),
@@ -460,20 +386,5 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(first, repeat, "the same socket keeps one lock");
         assert_ne!(first, second, "sessions never share a lock");
-    }
-
-    #[test]
-    fn the_daemon_lock_excludes_a_second_holder() {
-        let path = std::env::temp_dir().join(format!(
-            "cast-title-lock-{}-{}",
-            std::process::id(),
-            compose(&context(None, None), Some("t")).len()
-        ));
-        let _ = std::fs::remove_file(&path);
-        let first = open_lock_file(&path).unwrap();
-        assert!(try_lock(&first), "the first holder takes the lock");
-        let second = open_lock_file(&path).unwrap();
-        assert!(!try_lock(&second), "a second holder is rejected");
-        let _ = std::fs::remove_file(&path);
     }
 }
