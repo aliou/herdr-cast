@@ -15,6 +15,9 @@ The plugin executes as the user and can post notifications, change Herdr
 layout, focus panes, and raise terminal windows. Treat runtime testing as
 state-changing work.
 
+Read `CONTEXT.md` before naming or changing anything that uses its terms
+(Space, host, remote, link, relay, token, delivery chain, and so on).
+
 ## Non-negotiable runtime isolation
 
 Never test this plugin in the Herdr session containing the current agent or in
@@ -49,409 +52,14 @@ behavior belongs in the disposable session.
 The installed `herdr` binary is the authority for CLI syntax and protocol
 shape. Inspect `herdr --version` and the relevant command group's help before
 using it; do not assume the adjacent Herdr source checkout matches the running
-version.
+version. Run `herdr api schema` (optionally with `--output /var/tmp/...`) before
+adding or changing raw socket requests, response parsing, event payload
+assumptions, or plugin context fields. Do not copy the schema into this
+repository.
 
-The JSON schema for the installed server's current protocol version is
-available from:
+## Commands and checks
 
-```bash
-herdr api schema
-```
-
-Use `herdr api schema --output /var/tmp/herdr-api-schema.json` when a file is
-useful, and inspect `herdr api schema --help` for supported output options. Run
-this before adding or changing raw socket requests, response parsing, event
-payload assumptions, or plugin context fields. Do not copy the schema into this
-repository or rely on a remembered shape.
-
-This plugin deliberately talks to `HERDR_SOCKET_PATH` directly. Keep raw
-requests aligned with the current schema and preserve the newline-delimited JSON
-request/response contract.
-
-## Repository map
-
-- `herdr-plugin.toml`: plugin contract, build steps, event subscriptions, and
-  pane entrypoints. Keep `min_herdr_version` aligned with the oldest protocol
-  and manifest features actually used.
-- `src/main.rs`: dispatches the Rust binary's `pane-focused`, `notify`,
-  `clear-notification`, `forward-notify`, `daemon`, `forward-start`,
-  `forward-daemon`, `bridge-start`, `bridge`, `bridge-relay`, `bridge-send`,
-  `bridge-focus`,
-  `focus`, `palette`,
-  `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`, `hunk-log`,
-  `open-popup`, `sync-space`, `sync-title`, `sync-spaces`, and `shell-init`
-  commands. The `palette`, `directory-workspace`, `workspace-picker`,
-  `lazygit`, `hunk`, and `hunk-log` commands are interactive popup
-  entrypoints; on a non-zero exit they render a bold-red `[cast] ...` line and
-  wait for a keypress before the popup closes.
-  Background hooks, the resident daemon, and non-interactive commands never
-  wait. `pane-focused` is the `pane.focused` coordinator: it runs the recency
-  log, notification clearing, the title refresh, and the bridge daemon
-  check independently, so one failing feature never suppresses the others.
-- `src/events.rs`: typed parsing of the `HERDR_PLUGIN_EVENT_JSON` payload
-  shared by every event hook (pane, workspace, and agent fields, with
-  workspace ids accepted in every shape Herdr has emitted). Malformed events
-  fail soft to absent fields.
-- `src/api.rs`: newline-delimited JSON client for the injected Unix socket.
-- `src/daemon.rs`: shared plumbing for resident daemons: the state-dir
-  `flock` singleton (`acquire`, `is_held`), `spawn_detached` (detached
-  stdio and process group, optional size-capped stderr log), and the
-  machine `hostname`/`short_host` helpers every module uses.
-- `src/bridge/`: the host bridge. The host Mac's `bridge` daemon (one per
-  user via `bridge.lock`, spawned by the `bridge-start` startup hook and
-  re-ensured on `pane.focused`, logging to `bridge.log`) scans `/bin/ps`
-  every 3 seconds for `herdr --remote <target>` clients (`targets.rs`),
-  groups aliases by `ssh -G`, and keeps one `ssh -T -o BatchMode=yes -o
-  ControlPath=none <target> 'exec herdr-cast bridge-relay'` link per
-  machine (`host.rs`, `tunnel.rs`), with backoff, a hello deadline, a
-  60-second retry for remotes whose herdr-cast lacks the relay, and a park
-  state for a link whose socket another link took over (cleared whenever
-  the set of linked machines changes, so the parked link resumes when the
-  other one leaves). It exits after
-  sustained loss of its Herdr socket. The remote `bridge-relay`
-  (`relay.rs`) binds `~/.local/state/herdr-cast/bridge.sock` by rename
-  (atomic takeover), forwards one sender request at a time over stdio, and
-  replies with the host's ack; it exits on stdin EOF, a missed ping
-  deadline, a signal, or losing the socket inode, removing the socket
-  first and then sending `bye`. `send.rs` is the sender API used by
-  `notify` and the pasteboard watcher; `wire.rs` defines the frames (one
-  JSON header line plus a raw body of `len` bytes). The host applies
-  notifications through `notify::deliver_bridged` and pasteboard text
-  through `/usr/bin/pbcopy`. Notifications carry the sender's Herdr socket
-  and `HERDR_SESSION`; their click runs `bridge-focus`, which asks the host
-  daemon over `bridge-control.sock` (state dir) to send a `focus` frame down
-  the link (the relay calls `agent.focus` on that socket) and gets back the
-  candidate Ghostty tab pids (`Wanted::tab_pids`: clients of the session
-  first, newest first, each client's pid then its parent's), then raises
-  the first matching tab through Ghostty's AppleScript `focus`. Linux builds keep the relay and sender and
-  leave the host inert.
-- `src/notify.rs`: hard-coded personal notification behavior, event handling,
-  state, Herdr enrichment, the shared two-line layout assembly (`compose`),
-  macOS notifier registration, delivery, and pane-group removal,
-  the delivery chain (bridge first, then `notification.show` on every
-  platform; on macOS a `shown` response skips local delivery, and on Linux
-  it is the last path), bridged delivery on the host (`deliver_bridged`),
-  macOS
-  click-to-focus, and the `forward-notify` receiver: the Nix
-  package installs a `terminal-notifier` shim that execs this command so
-  Herdr's macOS client renders forwarded remote payloads (layout parts,
-  grouping, status from the v1 JSON body) through the status's HerdrNotify
-  bundle while passing every other notification through the neutral bundle
-  verbatim. It resolves the bundles from `libexec/` relative to the
-  canonicalized executable, never from `HERDR_PLUGIN_ROOT`, because it runs
-  in client context.
-- `src/forward/`: macOS-only pasteboard-to-client forwarding for Factorial.
-  A startup hook starts a per-socket daemon that reads AppKit's pasteboard
-  change count and text through `objc2-app-kit` and sends each copy through
-  the bridge. Without a bridge it finds the focused pane's tty from
-  `pane.process_info` and its shell PID and writes OSC 52 to that pane.
-  Non-macOS builds leave both commands inert.
-- `src/palette.rs`: popup layout palette. It uses `layout.export` and
-  `pane.move` to flip a two-pane split, owns the shared `pane.move`
-  protocol types and the current-location lookup, dispatches "Move pane…"
-  to `src/move_wizard.rs`, and renames the current tab or workspace with
-  `workspace.rename` / `tab.rename`. The window title is owned by
-  `src/title.rs`; nothing here may write it.
-- `src/move_wizard.rs`: multi-step move-pane wizard. Keeps an explicit
-  stack of picker levels (destination kind → fuzzy workspace → tab tree →
-  split direction, or → session picker) driven by `picker::pick_nav`:
-  Escape clears the query, then pops one level; Esc on the first level
-  returns `WizardExit::Back` so the palette re-opens its root action list;
-  Ctrl-C aborts from any depth. Fetches `workspace.list`, `tab.list`, the
-  pane's current location, its `pane.get` details (cwd, title, agent
-  session), and `herdr session list --json` once and reuses that snapshot
-  across levels. Picking a workspace row moves the pane into a new tab
-  there; picking a tab row always asks for the split direction, because the
-  `pane.move` `tab` destination requires `split`. Every same-session move
-  maps to one `pane.move` followed by an explicit `pane.focus` on the
-  resulting pane id — the popup closes on top of the move, and the
-  post-move focus is what lands the user on the moved pane instead of back
-  on the pane that spawned the popup. "Move pane to another session…"
-  connects to the target session's socket (`SocketClient::new` with its
-  path), recreates the pane there via `workspace.create` (same label and
-  cwd, the response's `root_pane`), `pane.rename`, and `agent.start` with
-  the per-agent resume flags that mirror Herdr's own `agent_resume::plan`
-  (re-check that table when upgrading Herdr), then closes the source pane
-  and ends with a local `notification.show` toast; focus cannot follow
-  across sessions. "Move workspace to another session…" applies the same
-  transplant to the whole current workspace: fresh `tab.list` + `pane.list`
-  at execution time, each tab's layout replayed from its `layout.export`
-  tree (`plan_replay` turns it into ordered `pane.split` steps with the
-  exported ratios), a coverage guard that aborts if any listed pane never
-  got recreated, and `workspace.close` only after every pane was moved. A
-  failure before the close keeps the source pane or workspace.
-- `src/picker.rs`: reusable ratatui/crossterm fuzzy selector with readline
-  editing, tree rows, animated agent-status icons, and `pick_nav`, the
-  wizard-level variant whose Escape means "clear the query, then go back
-  one level" while Ctrl-C cancels outright. Its colors come from
-  `src/theme.rs`.
-- `src/workspace.rs`: zoxide-backed workspace creation plus fuzzy workspace and
-  pane focus through `workspace.create`, `workspace.list`, `pane.list`,
-  `workspace.focus`, and `pane.focus`. The workspace picker has three views:
-  `spaces` (workspace -> pane tree), `agents` (flat agent panes by status),
-  and `panes` (every pane, most-recent-focus first via `src/recency.rs`).
-  Pane and agent rows carry their space's machine, read from the server-held
-  `host`/`hostkind` workspace tokens via `space::machine`, in their search
-  text and in the flat views' context label, so a host name or `sbx` filters
-  by machine in every view.
-- `src/theme.rs`: picker palette resolution. Mirrors herdr's own
-  `config_path()` resolution (`HERDR_CONFIG_PATH`, else `XDG_CONFIG_HOME`,
-  else `~/.config`), line-parses only herdr config's `[theme]` /
-  `[theme.custom]` / `[theme.custom.dark]` / `[theme.custom.light]`
-  sections without a TOML dependency, picks dark or light by querying the
-  terminal background through OSC 11 (with `COLORFGBG` fallback), and maps
-  the ten token values the pickers consume onto `src/picker.rs` colors.
-  Tokens absent from the config fall back to the hard-coded senzu palette;
-  named base themes other than `terminal` are not reproduced. Falls back
-  best-effort: an absent or unparsable config can never make a picker
-  unreadable. Tests for config layering, color parsing, and the luma
-  threshold live here.
-- `src/recency.rs`: bounded move-to-front log of focused pane ids, recorded by
-  the `pane.focused` coordinator into the injected state directory. The
-  same coordinator clears outstanding local macOS notifications for the
-  focused pane. Read at picker open; stale ids for closed panes are
-  filtered against `pane.list` and never name a pane.
-- `src/space.rs`: Space sidebar metadata. Reports the `org`, `repos`, `host`,
-  `hostkind`, and `pad` workspace tokens from the root pane's `cwd` and
-  `pane.process_info`, and prints the zsh integration that triggers a sync.
-  `space::describe` renders those tokens for one-line surfaces such as the
-  workspace picker.
-- `src/title.rs`: owns the foreground terminal window title, composed as
-  `HOSTNAME › SESSION_NAME › terminal_title`. The hostname fragment appears
-  only when the server's inherited environment carries `SSH_CONNECTION` or
-  `SSH_TTY`; the session fragment only for named sessions; the tail is the
-  focused pane's `terminal_title_stripped`. `sync-title` pushes the title and
-  ensures a resident `herdr-cast daemon` per session, which polls `pane.list`
-  and reapplies on change (Herdr withholds `pane.updated` from hooks). The
-  daemon singleton is an `flock` on a state-dir lock file keyed by socket
-  path, and the daemon exits after persistent socket loss. Each poll also
-  feeds `src/session.rs`.
-- `src/session.rs`: the `session` Agents-sidebar token, reported per pane
-  from the title daemon's `pane.list` poll through `pane.report_metadata`
-  (source `plugin:ad.cast`). pi writes titles as `π - <session name> - <cwd>`
-  and Herdr's stripped title keeps the `π`; the token holds the session name
-  with that prefix and the ` - <cwd basename>` suffix removed. An unnamed
-  session is labeled from the first user message of the pane's
-  `agent_session` file — the skill name for a `<skill name="…">` opener,
-  else the prompt's first six words, cached per path — then the title body,
-  then the agent kind. Tokens attach to a pane's
-  underlying terminal, so reporter state is keyed by terminal id, pruned
-  against `pane.list`, fully resent every 60 seconds, and sequenced by a
-  monotonic counter the daemon never shares with another writer. Reports
-  carry only the `session` token — no `agent`, `title`, `display_agent`, or
-  `ttl_ms` fields — so they never bind to an agent's lifecycle and stay
-  compatible with `min_herdr_version = "0.8.0"`.
-- `src/zoxide.rs`: filters zoxide to projects below `~/code/src`, adds `~/.dot`
-  and top-level `~/tmp` directories, and persists the selected zoxide or
-  alphabetical order. When zoxide is absent or has no ranked directories
-  (the sandbox case), falls back to a filesystem scan of `~/code/src` and
-  `/workspace/code/src` for git repositories, reusing `lazygit`'s scanner so a
-  sandbox without zoxide can still create a workspace at a nearby project.
-- `src/popup.rs`: `open-popup` command. Resolves popup dimensions as the
-  larger of a percentage of the current terminal area (read through
-  `pane.layout`) and a fixed minimum cell size, then opens the entrypoint
-  through `plugin.pane.open` with concrete dimensions. Keeps fuzzy-picker
-  popups usable on small screens; sizing flags come from the caller's key
-  binding rather than the manifest.
-- `src/popup_cli.rs`: runs a child CLI inside a popup, inheriting stdin,
-  stdout, and stderr so a TUI such as lazygit renders directly in the
-  pane. Resolves the focused pane's cwd through `pane.get`. A non-zero exit
-  becomes the `<program> exited with <status>` error that `main.rs` renders
-  and waits on. Use only for CLIs whose output belongs in the popup; for CLIs
-  whose stdout must be parsed (zoxide, codesign, Launch Services), keep using
-  `Command::output()` directly.
-- `src/lazygit.rs`: `lazygit` entrypoint. Opens lazygit in the focused pane's
-  repository, or fuzzy-picks one found up to three levels below it when the
-  pane is not inside a repository. Its `resolve_repository` is the shared
-  repository resolution other popup entrypoints reuse.
-- `src/hunk.rs`: `hunk` and `hunk-log` entrypoints. `hunk` runs
-  `hunk diff --watch` against the focused pane's repository (the whole
-  working-tree changeset including untracked files, reloaded while agents
-  edit); `hunk-log` runs `hunk log` for commit navigation. Both reuse
-  `lazygit`'s repository resolution and run hunk at the repository root,
-  because hunk has no repository flag. A generated hunk extension
-  (`src/hunk-review-dump.mjs`, written into the plugin state directory and
-  loaded through `--extension`) dumps the review's user notes to a temp file
-  on every note change and at hunk's shutdown event. When hunk exits, the
-  dump path is copied to the clipboard (pbcopy/wl-copy/xclip, best-effort)
-  and Herdr is asked to toast about it through `notification.show` with
-  `sound = "none"`; with no notes, neither happens. The dump is the public
-  `hunk session comment list --json` output, so notes survive the popup.
-- `assets/HerdrNotify.app`: bundled, rebranded `terminal-notifier`. Preserve
-  its license in `assets/HerdrNotify.app.LICENSE.md`. Plugin-context code
-  finds it under `assets/`; the Nix package also installs the whole
-  `HerdrNotify*.app` set under `libexec/` for the client-context
-  `forward-notify` shim and under `share/herdr-cast/plugin/assets/` so a
-  package-installed plugin root (no checkout) can deliver locally.
-- `assets/HerdrNotify-blocked.app` and `assets/HerdrNotify-done.app`:
-  per-status notification identities, generated from the base bundle by
-  `scripts/gen-notify-bundles.py` (composited status-dot icon, own bundle
-  id, ad-hoc signed) and committed. macOS draws a notification's icon from
-  the sender bundle's registered icon and offers no per-notification
-  override, so these bundles are how a notification carries its status
-  visually. Each variant is registered and signed lazily with its own
-  sentinel, and triggers a one-time macOS permission grant.
-
-Herdr runs plugin commands with the plugin root as cwd and injects runtime
-variables including `HERDR_BIN_PATH`, `HERDR_SOCKET_PATH`,
-`HERDR_PLUGIN_CONFIG_DIR`, `HERDR_PLUGIN_STATE_DIR`,
-`HERDR_PLUGIN_CONTEXT_JSON`, and entrypoint-specific event or pane variables.
-The plugin has no config file or user-facing environment overrides. Personal
-behavior is hard-coded in `src/notify.rs`. Store runtime artifacts only in the
-injected state directory, never in the source checkout. The one exception is
-the bridge socket, `~/.local/state/herdr-cast/bridge.sock`: `bridge-relay`
-runs over ssh outside plugin context, and senders must find it without
-configuration.
-
-## Development behavior
-
-- `~/.local/bin/herdr-cast` is the single command path Herdr and shells should
-  resolve. In normal use it must be a symlink to the Nix-packaged
-  `herdr-cast`, managed by the homelab Home Manager module at
-  `~/code/src/code.378labs.dev/homelab/modules/modules/programs/herdr/default.nix`.
-- Rust changes do not affect runtime until tested through that command path.
-  For local runtime testing only, build `target/release/herdr-cast`, temporarily
-  point `~/.local/bin/herdr-cast` at this checkout's release binary, run the
-  disposable-session test, then restore `~/.local/bin/herdr-cast` to the Nix
-  store path. Do not leave the symlink pointing at `target/release/herdr-cast`.
-- Resident daemons (`bridge`, `daemon`, `forward-daemon`, and remote
-  `bridge-relay` processes) keep running the binary they started with. A
-  deploy reaches them only after a Herdr restart or after they are killed.
-  Startup hooks start all of them; `pane.focused` respawns only `bridge`
-  and `daemon`; the host daemon reconnects a killed relay. Do not add
-  timers or self-update checks for this.
-- `herdr plugin link` does not run manifest `[[build]]` commands.
-- Manifest changes require registration refresh or a newly loaded server to be
-  observed. Test them with the temporary-id workflow above, not by disturbing
-  `ad.cast` in the current session.
-- On macOS, the `notify` command refreshes Launch Services registration on a
-  six-hour TTL. Re-signing can change the app identity and reset the macOS
-  notification grant, so preserve verify-before-sign behavior.
-
-Useful discovery and diagnostics commands include:
-
-```bash
-herdr plugin list --plugin ad.cast --json
-herdr plugin config-dir ad.cast
-herdr plugin log list --plugin ad.cast
-herdr plugin pane --help
-herdr api schema
-```
-
-Use the disposable-session environment prefix from the copied skill for every
-runtime invocation.
-
-## Implementation invariants
-
-- Resolve event identity from the event payload. Never substitute the currently
-  focused pane for a background event's pane.
-- Filter non-triggering statuses before live Herdr enrichment to avoid needless
-  socket calls.
-- Keep Herdr enrichment and macOS focus detection best-effort. Detection
-  failures must fail open so a duplicate notification is preferred over a
-  silently missed notification.
-- Senders try the bridge first and keep every pre-bridge path as the
-  fallback: `notification.show` then the local notifier for notifications,
-  OSC 52 for pasteboard copies. A missing socket is the normal case on the
-  host itself and is not logged; every other bridge failure is logged and
-  falls back.
-- Only `bridge-relay` creates or removes the remote bridge socket. It removes
-  the socket only while the path still has its own inode, and before any
-  other I/O on exit. It never panics on stdio errors: write logs with
-  `let _ = writeln!(io::stderr(), ...)`, never `eprintln!`.
-- Only the host daemon starts ssh, always with `BatchMode=yes` and
-  `ControlPath=none`. Bridge targets come from running `herdr --remote`
-  processes; never store a machine list.
-- The host acks a bridge request only after applying it. Keep timeouts
-  ordered: notifier and pbcopy children (3 s) < relay ack wait (4 s) <
-  sender wait (5 s). Give notifier children a null stdin: terminal-notifier
-  reads its message from a non-terminal stdin and blocks.
-- Check the bridge body cap (1 MiB) before connecting on the sender and
-  before allocating on the reader.
-- Run Ghostty AppleScript only from the notification click
-  (`bridge-focus`, `focus`), which runs inside the HerdrNotify bundle that
-  holds the Automation grant. The bridge daemon must never drive Ghostty
-  itself; that would prompt under another identity.
-- Request terminal notifications through Herdr's `notification.show` socket
-  method with `sound = "none"` on every platform. On macOS, skip the local
-  notifier only when the server reports the notification shown to an attached
-  client. Do not write OSC
-  directly to a pane PTY; Herdr owns the client notification path.
-- `terminal-notifier -execute` evaluates one command string through the system
-  shell. Keep every generated argument single-quoted and unit-test paths and
-  pane IDs containing spaces, quotes, and shell metacharacters.
-- Keep notification sound out of this plugin's Herdr socket requests
-  (`sound = "none"`); the bundled macOS notifier owns the status sound, and
-  the forwarder recreates it from the payload's status on delivery.
-- Keep notification text glyph-free. Both local delivery and the forwarder
-  must render through `notify::compose`: the title names the project
-  (`PROJECT@HOST` when forwarded), the subtitle is the action plus
-  `· workspace` only when the label differs from the project, and there is
-  no body line. Status is visual (per-status bundle icon) and audible
-  (Glass/Funk), never an emoji.
-- The forwarded payload caps its fields so the encoded JSON always fits
-  Herdr's 240-character body cap; never let the server truncate it.
-  Keep accepting legacy `t`/`b` payloads until every remote sender in use
-  runs a build with the `a`/`w`/`p`/`h` parts payload.
-- Deliver every triggered notification regardless of pane, tab, workspace, or
-  frontmost-app focus; focus-based suppression was removed deliberately and
-  must not return without an explicit request. The debounce window and the
-  hard-coded trigger statuses are the only filters.
-- Space metadata describes the first tab's root pane, which is the pane Herdr
-  uses for a Space's own Git identity and the first entry `pane.list` returns
-  for a workspace. Never relabel a Space from a secondary pane.
-- Never report a branch token, and never report the repository or directory a
-  space sits in. Herdr derives `branch` and `git_status` from that same pane,
-  and names the space after that repository or directory, renaming it when the
-  pane moves. Space tokens answer where a space lives, not what it is.
-- Derive remote sessions from `pane.process_info`, never from a typed command
-  line. The shell integration only triggers a sync and passes no values.
-- Sequence every metadata report with the current epoch milliseconds so a slow
-  background sync cannot overwrite a newer one.
-- Report absent values as `null` so stale tokens clear instead of lingering.
-- Keep every Space two rows tall. Herdr hides a row whose tokens are all empty
-  and trims whitespace out of metadata, so report the braille-blank `pad`
-  token whenever nothing else, including Herdr's own branch, would render.
-- Render Space tokens through `space::describe` everywhere outside the
-  sidebar, so the picker and the sidebar cannot drift apart.
-- Use injected context and opaque IDs. Never infer workspace, tab, or pane IDs.
-- Only the title daemon writes the `session` pane token. Herdr tracks the
-  report sequence per terminal and source and silently drops stale values, so
-  a second writer under `plugin:ad.cast` would fight the daemon's monotonic
-  counter.
-- Display strings are derived once, by the reporter, and read back from
-  server state (`pane.tokens`, `workspace.tokens`) by every surface. A
-  consumer must never re-derive a label from raw pane or workspace fields:
-  two derivations of the same string always drift, which is how the
-  workspace picker's pane titles once diverged from the Agents sidebar. A
-  missing token means "not reported yet"; show a minimal transient
-  placeholder, not a locally computed guess. Rendering a server-held token
-  is fine (that is what `space::describe` does); composing new display
-  strings from raw fields is not.
-- The window title belongs to `src/title.rs` alone. No other module may call
-  `client.window_title.set`: an explicit title suppresses Herdr's template,
-  and a second writer would fight the daemon within one poll. Resolve the
-  hostname and session fragments once from the server-inherited environment
-  (`SSH_CONNECTION`/`SSH_TTY` and `HERDR_SESSION`); never derive them from a
-  pane. Keep the daemon one per socket via the state-dir `flock` keyed by
-  socket path, and keep its spawned stdio detached so hook pipes close.
-- In Rust, represent protocol methods and payloads with serializable types,
-  report malformed/error responses clearly, and consult `herdr api schema`
-  before changing them.
-- Keep personal policy constants in `src/notify.rs`. Do not add a config file or
-  per-setting environment overrides without an explicit request.
-- The wait-on-error hold is an allowlist over interactive popup entrypoints
-  (`palette`, `directory-workspace`, `workspace-picker`, `lazygit`, `hunk`,
-  `hunk-log`) in `main.rs`. Background hooks and non-interactive commands
-  must never wait for a keypress. Add a popup entrypoint to the allowlist
-  when it can fail in a way the user should read before the popup closes.
-- Add dependencies only when the Rust standard library and current crates
-  cannot cover the need.
-
-## Checks
-
-Run checks from the repository root. Cargo is not normally on PATH on this
-machine, so use Nix when needed:
+Run checks from the repository root. Cargo is not normally on PATH here:
 
 ```bash
 nix-shell -p cargo rustc rustfmt --run 'cargo fmt -- --check'
@@ -459,45 +67,130 @@ nix-shell -p cargo rustc --run 'cargo test'
 nix-shell -p cargo rustc --run 'cargo build --release'
 ```
 
-Add focused unit tests for protocol serialization, event decisions, state-file
-logic, shell quoting, frontmost-app parsing, and layout behavior. Static checks
-may run in this checkout. Tests that connect to Herdr, invoke a plugin pane,
-post a notification, focus or move panes, consume live events, sign the app, or
-touch Launch Services must run only with explicit user approval and in a
-disposable named session.
+Static checks may run in this checkout. Tests that connect to Herdr, invoke a
+plugin pane, post a notification, focus or move panes, consume live events, sign
+the app, or touch Launch Services need explicit user approval and a disposable
+named session.
 
-After runtime validation, inspect the temporary session's plugin logs and state,
-record the Herdr version and observed result, then perform the skill's full
-cleanup procedure.
+For local runtime testing only, `~/.local/bin/herdr-cast` may temporarily point
+at `target/release/herdr-cast`; restore it to the Nix store path afterwards and
+never leave it pointing at the checkout.
+
+## Architecture
+
+One Rust binary dispatched in `src/main.rs` (24 subcommands), declared in
+`herdr-plugin.toml` (startup hooks, event subscriptions, pane entrypoints).
+Runtime artifacts live only in the injected `HERDR_PLUGIN_STATE_DIR`, except the
+remote bridge socket at `~/.local/state/herdr-cast/bridge.sock`.
+
+```mermaid
+flowchart TB
+    hooks["herdr hooks (startup + events)"] --> main["main.rs dispatch"]
+    main --> notify["notify/ — hook pipeline, local + bridged delivery,<br>forwarder shim, click-to-focus"]
+    main --> bridge["bridge/ — host daemon, tunnels, relay, senders, wire"]
+    main --> forward["forward/ — pasteboard watcher (Factorial)"]
+    main --> spaces["space.rs, session.rs, title.rs — sidebar tokens<br>and the window title"]
+    main --> popups["popup.rs, popup_cli.rs, picker.rs, theme.rs,<br>palette.rs, move_wizard.rs, workspace.rs,<br>zoxide.rs, lazygit.rs, hunk.rs"]
+    main --> plumbing["api.rs (socket client), events.rs, daemon.rs,<br>recency.rs"]
+    notify --> bridge
+    forward --> bridge
+    popups --> plumbing
+    spaces --> plumbing
+```
+
+Module map:
+
+| Path | Owns |
+| --- | --- |
+| `src/main.rs` | subcommand dispatch, error rendering, popup error wait |
+| `src/api.rs` | newline-delimited JSON client for the injected socket |
+| `src/events.rs` | typed parsing of `HERDR_PLUGIN_EVENT_JSON`; fails soft |
+| `src/daemon.rs` | shared daemon plumbing: `flock` singleton, detached spawn, hostname |
+| `src/notify/` | notifications: `hook.rs` pipeline, `compose.rs` layout, `local.rs` macOS delivery and registration, `bridged.rs` host delivery, `forwarder.rs` terminal-notifier shim, `focus.rs` click-to-focus, `paths.rs` |
+| `src/bridge/` | the host bridge: `host.rs` daemon, `tunnel.rs` link session, `targets.rs` discovery, `relay.rs` remote relay, `send.rs` sender, `wire.rs` frames |
+| `src/forward/` | macOS pasteboard-to-client forwarding |
+| `src/space.rs` | Space sidebar tokens and the zsh integration printer |
+| `src/session.rs` | the Agents-sidebar `$session` token reporter |
+| `src/title.rs` | the window title and the per-session title daemon |
+| `src/popup.rs`, `src/popup_cli.rs` | popup sizing and child CLI streaming |
+| `src/picker.rs`, `src/theme.rs` | the shared fuzzy picker and its colors |
+| `src/palette.rs`, `src/move_wizard.rs` | layout palette and the multi-step move wizard |
+| `src/workspace.rs`, `src/zoxide.rs` | workspace/pane focus pickers and directory candidates |
+| `src/lazygit.rs`, `src/hunk.rs` | lazygit and hunk popups, shared repository resolution |
+| `src/recency.rs` | bounded focused-pane recency log |
+| `assets/` | `HerdrNotify*.app` identity bundles; status variants generated by `scripts/gen-notify-bundles.py` and committed |
+| `extension/` | small TypeScript pi extension |
+
+## Documentation map
+
+Read the relevant doc before changing a subsystem; update it in the same
+change when behavior moves:
+
+- docs/bridge.md — before touching `src/bridge/`, sender fallbacks, or
+  bridge sockets and timeouts.
+- docs/notifications.md — before touching `src/notify/`, the bundles, or
+  notification policy constants.
+- docs/spaces-and-titles.md — before touching `src/space.rs`, `src/session.rs`,
+  or `src/title.rs`.
+- docs/popups.md — before touching the pickers, palette, wizard, workspace
+  creation, lazygit, or hunk.
+- docs/setup.md — install, Herdr config, shell integration, daemon deploy
+  semantics.
+- docs/releases.md — CI binaries, the release scheme, and pinning rules.
+
+Active plans live in `.agents/plans/` (dated, disposable); living docs are
+undated. Keep the boundary: implemented behavior belongs in `docs/`, proposed
+work in `.agents/plans/`.
+
+## Conventions and invariants
+
+- Resolve event identity from the event payload. Never substitute the
+  currently focused pane for a background event's pane. Use injected context
+  and opaque IDs; never infer workspace, tab, or pane IDs.
+- Keep Herdr enrichment and focus detection best-effort and fail open: a
+  duplicate notification is preferred over a silently missed one. Deliver
+  every triggered notification regardless of focus; the debounce window and
+  the trigger statuses are the only filters.
+- Keep personal policy constants in `src/notify/mod.rs` and `src/space.rs`.
+  No config file, no per-setting environment overrides.
+- Keep notification text glyph-free, sound out of Herdr socket requests
+  (`sound = "none"`), and status visual (bundle icon) and audible.
+- Senders try the bridge first and keep every pre-bridge path as the
+  fallback. Keep bridge timeouts ordered: notifier/pbcopy 3 s < relay ack 4 s
+  < sender 5 s; check the 1 MiB body cap before connecting and before
+  allocating.
+- Only the host daemon starts ssh (`BatchMode=yes`, `ControlPath=none`);
+  targets come from running `herdr --remote` processes, never a stored list.
+  Only `bridge-relay` creates or removes the remote bridge socket. Run
+  Ghostty AppleScript only from the notification click.
+- `terminal-notifier -execute` evaluates one shell string: single-quote every
+  generated argument and unit-test paths and pane ids with spaces, quotes,
+  and shell metacharacters.
+- Only the title daemon writes the window title and the `$session` pane
+  token. Display strings are derived once by the reporter and read back from
+  server-held tokens everywhere else; never re-derive a label from raw
+  fields.
+- Represent protocol methods and payloads with serializable types; report
+  malformed or error responses clearly.
+- Resident daemons keep the binary they started with. Never add timers or
+  self-update checks for deploys.
+- The popup error wait is an allowlist over interactive entrypoints in
+  `src/main.rs`; background hooks and non-interactive commands must never
+  wait for a keypress.
+- Add dependencies only when the Rust standard library and current crates
+  cannot cover the need.
 
 ## CI binaries
 
-`Cargo.lock` is tracked because this binary is built by GitHub Actions.
-Keep it current when `Cargo.toml` dependencies change.
-
-`.github/workflows/ci.yml` builds these binaries on every push and pull
-request:
-
-- `herdr-cast-darwin-arm64`
-- `herdr-cast-linux-arm64`
-- `herdr-cast-linux-x64`
-
-Linux binaries target musl so NixOS consumers can run them without patching a
-dynamic loader. On pushes to main, the build jobs and the `assets` job also
-publish the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
-`HerdrNotify*.app` identities) through `.github/scripts/publish.sh` to the
-rolling `unstable` prerelease (overwritten) and to the per-commit
-`build-<epoch>-<sha8>` prerelease (never overwritten; the epoch is the
-commit's committer timestamp, so the greatest tag is the newest build). The
-`prune` job (`.github/scripts/prune.sh`) keeps the newest three `build-*`
-releases and deletes older ones with their tags. The Nix package at
-`pkgs/pkgs/herdr-cast` in the homelab repo pins a `build-*` release; its
-`update.sh` picks the greatest complete one. Never upload with `--clobber`
-to a `build-*` release: a pinned package hashed its files.
+`Cargo.lock` is tracked because GitHub Actions builds this binary; keep it
+current when dependencies change. CI publishes to the rolling `unstable`
+prerelease and to per-commit `build-<epoch>-<sha8>` releases (pruned to the
+newest three); see docs/releases.md. Never `--clobber` a `build-*` release.
 
 ## Documentation triggers
 
-Update `README.md` when behavior, setup, requirements, or hard-coded personal
-policy changes. Update this file when the architecture, checks, protocol
-workflow, installation state, or safety constraints change. Keep docs about
-current behavior; use git history instead of leaving migration commentary.
+Update the matching doc under `docs/` when behavior, setup, requirements, or
+hard-coded policy changes. Update this file when architecture, checks,
+protocol workflow, installation state, or safety constraints change. Keep docs
+about current behavior; use git history instead of leaving migration
+commentary.
