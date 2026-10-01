@@ -677,11 +677,18 @@ GitHub Actions builds binaries on every push and pull request for:
 - `herdr-cast-linux-x64`
 
 Linux binaries target musl so they run on NixOS without a dynamic loader
-patch. On pushes to main, the build jobs and a separate `assets` job upload
+patch. On pushes to main, the build jobs and a separate `assets` job publish
 the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
-`HerdrNotify*.app` identities) to the rolling `unstable` prerelease, which
-the Nix package fetches through the official
-`releases/download/unstable/...` URLs.
+`HerdrNotify*.app` identities) to two prereleases:
+
+- `unstable`, the rolling latest build, overwritten on every push;
+- `build-<epoch>-<sha8>`, this commit's build, never overwritten. The epoch
+  is the commit's committer timestamp, so the greatest tag is the newest
+  build. A `prune` job keeps the newest three and deletes older ones with
+  their tags; rebuild older commits from source.
+
+The Nix package pins a `build-...` release, so a pinned build keeps
+fetching the bytes it hashed after newer pushes.
 
 ## License
 

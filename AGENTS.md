@@ -484,11 +484,16 @@ request:
 
 Linux binaries target musl so NixOS consumers can run them without patching a
 dynamic loader. On pushes to main, the build jobs and the `assets` job also
-upload the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
-`HerdrNotify*.app` identities) to the rolling `unstable` prerelease. The Nix package at
-`pkgs/pkgs/herdr-cast` in the homelab repo fetches everything through the
-official `releases/download/unstable/...` URLs, like the other package
-definitions.
+publish the binaries and `herdr-cast-assets-darwin.tar.gz` (the three bundled
+`HerdrNotify*.app` identities) through `.github/scripts/publish.sh` to the
+rolling `unstable` prerelease (overwritten) and to the per-commit
+`build-<epoch>-<sha8>` prerelease (never overwritten; the epoch is the
+commit's committer timestamp, so the greatest tag is the newest build). The
+`prune` job (`.github/scripts/prune.sh`) keeps the newest three `build-*`
+releases and deletes older ones with their tags. The Nix package at
+`pkgs/pkgs/herdr-cast` in the homelab repo pins a `build-*` release; its
+`update.sh` picks the greatest complete one. Never upload with `--clobber`
+to a `build-*` release: a pinned package hashed its files.
 
 ## Documentation triggers
 

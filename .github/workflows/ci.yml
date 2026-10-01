@@ -89,20 +89,11 @@ jobs:
           cp "target/${{ matrix.target }}/release/herdr-cast" "${{ matrix.artifact }}"
           chmod +x "${{ matrix.artifact }}"
 
-      - name: Upload to the unstable release
+      - name: Publish to the unstable and per-commit releases
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          # Four jobs race to create the release; losing the race is fine as
-          # long as the release exists by the time we upload.
-          if ! gh release view unstable >/dev/null 2>&1; then
-            gh release create unstable --prerelease --title unstable \
-              --notes "Rolling build of the main branch. Do not use as a changelog." \
-              || gh release view unstable >/dev/null
-          fi
-          gh release upload unstable "${{ matrix.artifact }}" --clobber
+        run: bash .github/scripts/publish.sh "${{ matrix.artifact }}"
 
   assets:
     name: Bundle HerdrNotify apps
@@ -121,15 +112,23 @@ jobs:
           tar -czf stage/herdr-cast-assets-darwin.tar.gz -C stage/libexec \
             HerdrNotify.app HerdrNotify-blocked.app HerdrNotify-done.app
 
-      - name: Upload to the unstable release
+      - name: Publish to the unstable and per-commit releases
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          if ! gh release view unstable >/dev/null 2>&1; then
-            gh release create unstable --prerelease --title unstable \
-              --notes "Rolling build of the main branch. Do not use as a changelog." \
-              || gh release view unstable >/dev/null
-          fi
-          gh release upload unstable stage/herdr-cast-assets-darwin.tar.gz --clobber
+        run: bash .github/scripts/publish.sh stage/herdr-cast-assets-darwin.tar.gz
+
+  prune:
+    name: Prune old per-commit releases
+    needs: [binaries, assets]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Keep the newest three build releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/prune.sh 3
