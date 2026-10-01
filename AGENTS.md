@@ -314,6 +314,12 @@ configuration.
   point `~/.local/bin/herdr-cast` at this checkout's release binary, run the
   disposable-session test, then restore `~/.local/bin/herdr-cast` to the Nix
   store path. Do not leave the symlink pointing at `target/release/herdr-cast`.
+- Resident daemons (`bridge`, `daemon`, `forward-daemon`, and remote
+  `bridge-relay` processes) keep running the binary they started with. A
+  deploy reaches them only after a Herdr restart or after they are killed.
+  Startup hooks start all of them; `pane.focused` respawns only `bridge`
+  and `daemon`; the host daemon reconnects a killed relay. Do not add
+  timers or self-update checks for this.
 - `herdr plugin link` does not run manifest `[[build]]` commands.
 - Manifest changes require registration refresh or a newly loaded server to be
   observed. Test them with the temporary-id workflow above, not by disturbing

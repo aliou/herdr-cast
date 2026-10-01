@@ -142,6 +142,13 @@ For diagnostics, `herdr-cast bridge-send [--socket PATH] notify --status
 done --action 'pi done'` and `... pasteboard < file` send one request by
 hand and print `ok` or the reason it failed.
 
+The resident daemons (bridge, title, pasteboard) keep the binary they
+started with. After deploying a new build, restart Herdr. Killing them
+also works: the next pane focus restarts the bridge and title daemons, and
+the host reconnects each remote's relay. The pasteboard watcher restarts
+only from its startup hook, so after killing it run `forward-start` as
+shown below.
+
 ### Remote notification forwarding
 
 Without a bridge, Cast requests Herdr's `notification.show`. When the server
@@ -426,6 +433,9 @@ paths or titles can run under it.
 - `zoxide` (optional; the new-workspace picker falls back to a filesystem
   scan when it is absent)
 - Rust and Cargo for local builds
+- For the host bridge: key-based ssh from the host Mac to each remote (it
+  connects with `BatchMode=yes`, so a password prompt fails the link), and
+  `herdr-cast` on the remote's non-interactive ssh `PATH`
 
 This checkout uses Nix when Rust tooling is not already available.
 
