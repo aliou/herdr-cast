@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -17,7 +16,6 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or_else(|| "HOME is not set".to_string())?;
-    let projects_root = home.join("code/src");
     // zoxide is absent on sandbox hosts and optional elsewhere. When it is
     // missing, or present but yields nothing (an uninitialized db), fall back
     // to a filesystem scan of the project roots so the picker still works.
@@ -31,31 +29,15 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(format!("failed to run zoxide: {error}")),
     };
-    let scores = zoxide_entries
-        .iter()
-        .map(|(score, path)| (path.clone(), *score))
-        .collect::<BTreeMap<_, _>>();
+    // The frecency ranking is the only scoping: every ranked directory is
+    // offered, in zoxide's order.
     let mut candidates = BTreeMap::new();
     for (score, path) in zoxide_entries {
-        if path
-            .strip_prefix(&projects_root)
-            .is_ok_and(|relative| !relative.as_os_str().is_empty())
-        {
-            candidates.insert(path, score);
-        }
-    }
-    add_directory(&mut candidates, &scores, home.join(".dot"));
-    if let Ok(entries) = fs::read_dir(home.join("tmp")) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                add_directory(&mut candidates, &scores, path);
-            }
-        }
+        candidates.insert(path, score);
     }
 
     if candidates.is_empty() {
-        let roots = [projects_root.clone(), PathBuf::from("/workspace/code/src")];
+        let roots = [home.join("code/src"), PathBuf::from("/workspace/code/src")];
         return fallback_directories(&home, &roots);
     }
 
@@ -80,7 +62,7 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
         .into_iter()
         .map(|(path, score)| RankedDirectory {
             alpha_order: alpha_order.get(&path).copied().unwrap_or(usize::MAX),
-            label: directory_label(&home, &projects_root, &path),
+            label: directory_label(&home, &path),
             display_path: compact_home(&home, &path),
             path,
             score,
@@ -93,8 +75,8 @@ pub fn ranked_directories() -> Result<Vec<RankedDirectory>, String> {
 /// [`lazygit::MAX_DEPTH`] levels deep, so a sandbox without zoxide can still
 /// create a workspace at a nearby project.
 ///
-/// Roots are `$HOME/code/src` (the tree zoxide already filters to) and
-/// `/workspace/code/src` (where sandbox hosts keep their checkout). A
+/// Roots are `$HOME/code/src` and `/workspace/code/src` (where sandbox
+/// hosts keep their checkout). A
 /// directory without a `.git` entry is skipped, matching `lazygit`'s notion of
 /// a project root; a non-git directory can still be opened by typing its path
 /// in the picker. Scores are zero, so the picker's zoxide/alpha order toggle
@@ -124,50 +106,36 @@ fn fallback_directories(home: &Path, roots: &[PathBuf]) -> Result<Vec<RankedDire
         .collect::<BTreeMap<_, _>>();
     Ok(paths
         .into_iter()
-        .map(|path| {
-            let root = roots
-                .iter()
-                .find(|root| path.starts_with(root))
-                .map(PathBuf::as_path)
-                .unwrap_or(home);
-            RankedDirectory {
-                label: directory_label(home, root, &path),
-                display_path: compact_home(home, &path),
-                path: path.clone(),
-                score: 0.0,
-                alpha_order: alpha_order.get(&path).copied().unwrap_or(usize::MAX),
-            }
+        .map(|path| RankedDirectory {
+            label: directory_label(home, &path),
+            display_path: compact_home(home, &path),
+            path: path.clone(),
+            score: 0.0,
+            alpha_order: alpha_order.get(&path).copied().unwrap_or(usize::MAX),
         })
         .collect())
 }
 
-fn add_directory(
-    candidates: &mut BTreeMap<PathBuf, f64>,
-    scores: &BTreeMap<PathBuf, f64>,
-    path: PathBuf,
-) {
-    if path.is_dir() {
-        candidates
-            .entry(path.clone())
-            .or_insert_with(|| scores.get(&path).copied().unwrap_or(0.0));
-    }
-}
-
-fn directory_label(home: &Path, projects_root: &Path, path: &Path) -> String {
-    let relative = path
-        .strip_prefix(projects_root)
-        .or_else(|_| path.strip_prefix(home))
-        .unwrap_or(path);
+fn directory_label(home: &Path, path: &Path) -> String {
+    let relative = path.strip_prefix(home).unwrap_or(path);
     let segments = relative
         .components()
-        .map(|component| component.as_os_str().to_string_lossy())
+        .filter_map(|component| match component {
+            std::path::Component::Normal(name) => Some(name.to_string_lossy().to_string()),
+            _ => None,
+        })
         .collect::<Vec<_>>();
-    segments
+    let label = segments
         .iter()
         .skip(segments.len().saturating_sub(2))
-        .map(|segment| segment.as_ref())
+        .map(String::as_str)
         .collect::<Vec<_>>()
-        .join("/")
+        .join("/");
+    if label.is_empty() {
+        compact_home(home, path)
+    } else {
+        label
+    }
 }
 
 fn compact_home(home: &Path, path: &Path) -> String {
@@ -262,6 +230,7 @@ pub fn expand_home(query: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn parses_scores_and_paths_with_spaces() {
@@ -303,22 +272,17 @@ mod tests {
     }
 
     #[test]
-    fn labels_projects_and_extra_directories_with_two_segments() {
+    fn labels_take_the_last_two_segments_below_home() {
         let home = Path::new("/Users/example");
-        let projects = home.join("code/src");
         assert_eq!(
-            directory_label(
-                home,
-                &projects,
-                &projects.join("github.com/aliou/herdr-cast")
-            ),
+            directory_label(home, &home.join("code/src/github.com/aliou/herdr-cast")),
             "aliou/herdr-cast"
         );
-        assert_eq!(
-            directory_label(home, &projects, &home.join("tmp/repro")),
-            "tmp/repro"
-        );
-        assert_eq!(directory_label(home, &projects, &home.join(".dot")), ".dot");
+        assert_eq!(directory_label(home, &home.join("tmp/repro")), "tmp/repro");
+        assert_eq!(directory_label(home, &home.join(".dot")), ".dot");
+        assert_eq!(directory_label(home, Path::new("/tmp/foo")), "tmp/foo");
+        assert_eq!(directory_label(home, Path::new("/tmp")), "tmp");
+        assert_eq!(directory_label(home, Path::new("/")), "/");
     }
 
     fn init_repo(path: &Path) {

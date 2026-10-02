@@ -100,9 +100,9 @@ re-derives a label from raw fields.
 
 ### New workspace (`directory-workspace`)
 
-`src/workspace.rs` + `src/zoxide.rs`: candidates from `zoxide query -ls`
-filtered below `~/code/src`, always including `~/.dot` and top-level
-`~/tmp` directories, order persisted between zoxide and alphabetical.
+`src/workspace.rs` + `src/zoxide.rs`: candidates are every `zoxide query -ls`
+entry; frecency ranking is the only scoping. The order is persisted
+between zoxide and alphabetical.
 Without zoxide (or with no ranked entries), it falls back to a filesystem
 scan of `~/code/src` and `/workspace/code/src` for git repositories,
 reusing lazygit's scanner. A directory already represented by a workspace
