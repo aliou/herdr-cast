@@ -149,7 +149,9 @@ fn quiet_status(command: &mut Command) -> bool {
 
 /// Deliver one notification locally on macOS: pick the status bundle, group
 /// per pane, run the notifier, and record the outstanding marker so a later
-/// focus or close can remove the notification.
+/// focus or close can remove the notification. Returns whether the notifier
+/// ran: a `false` lets the caller fall back to `notification.show` instead
+/// of silently missing the notification.
 pub(crate) fn deliver_local(
     paths: &Paths,
     socket_path: Option<&str>,
@@ -157,7 +159,7 @@ pub(crate) fn deliver_local(
     status: &str,
     title: String,
     subtitle: Option<String>,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let variant = bundle_variant(status);
     let notifier = paths.notifier(variant);
     if !notifier.is_file() {
@@ -165,14 +167,14 @@ pub(crate) fn deliver_local(
             "bundled notifier executable is missing (expected {})",
             notifier.display()
         ));
-        return Ok(());
+        return Ok(false);
     }
     if !ensure_notifier_registered(paths, variant) {
-        return Ok(());
+        return Ok(false);
     }
     let group = local_notification_group(socket_path, pane_id);
     let Some(_lifecycle_lock) = notification_lifecycle_lock(&paths.state, &group, status) else {
-        return Ok(());
+        return Ok(false);
     };
     let mut args = vec!["-title".to_string(), title];
     if let Some(subtitle) = subtitle {
@@ -194,10 +196,13 @@ pub(crate) fn deliver_local(
 
     match run_notifier(&notifier, &args) {
         Ok(()) => mark_notification_outstanding(&paths.state, &group, status),
-        Err(error) => log(&error),
+        Err(error) => {
+            log(&error);
+            return Ok(false);
+        }
     }
 
-    Ok(())
+    Ok(true)
 }
 
 /// Remove local macOS notifications previously delivered for `pane_id`.
@@ -341,6 +346,29 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn deliver_local_reports_not_delivered_when_the_notifier_is_missing() {
+        let root = notification_test_root("missing-notifier");
+        let paths = Paths {
+            state: root.join("state"),
+            assets: root.join("assets"),
+        };
+
+        let delivered = deliver_local(
+            &paths,
+            Some("/tmp/herdr-session.sock"),
+            "w1:p1",
+            "blocked",
+            "title".to_string(),
+            None,
+        )
+        .unwrap();
+
+        assert!(!delivered);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

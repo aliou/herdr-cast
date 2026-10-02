@@ -1,8 +1,8 @@
 //! The `notify` hook: one `pane.agent_status_changed` event in, one
 //! notification out. Filters to the triggering statuses, enriches through
 //! the Herdr socket, debounces per pane and status, then runs the delivery
-//! chain: bridge first, then the server's `notification.show`, then the
-//! local macOS notifier.
+//! chain: bridge first, then the local macOS notifier, then the server's
+//! `notification.show`.
 
 use std::path::Path;
 use std::time::Duration;
@@ -140,10 +140,10 @@ fn prepare(
 ///
 /// 1. the bridge to the host Mac, when a relay socket exists on this
 ///    machine;
-/// 2. the server's `notification.show`, which an attached client renders
+/// 2. on macOS, the local notifier: its click carries the pane-focus
+///    command, which `notification.show` renders cannot express;
+/// 3. the server's `notification.show`, which an attached client renders
 ///    (through the forwarder on macOS clients);
-/// 3. on macOS, the local notifier, for the desktop app itself or a
-///    headless server nobody is attached to.
 fn deliver(
     paths: &Paths,
     socket_path: Option<&str>,
@@ -168,22 +168,28 @@ fn deliver(
         Err(bridge::Unavailable::NoSocket) => {}
         Err(error) => log(&format!("bridge: {error}; using notification.show")),
     }
+    // On macOS the local notifier goes before `notification.show`: only
+    // the local path's click carries `herdr-cast focus <socket> <pane>`,
+    // while the forwarder rendering of `notification.show` can only
+    // activate the Ghostty app. `notification.show` remains the fallback
+    // when the local notifier cannot deliver.
+    if cfg!(target_os = "macos") {
+        let parts = pending.parts();
+        let (title, subtitle) = compose(&parts);
+        if deliver_local(
+            paths,
+            socket_path,
+            &pending.pane_id,
+            &pending.status,
+            title,
+            subtitle,
+        )? {
+            return Ok(());
+        }
+    }
     let parts = pending.parts();
-    if request_terminal_notification(client, &pending.pane_id, &pending.status, &parts) {
-        return Ok(());
-    }
-    if !cfg!(target_os = "macos") {
-        return Ok(());
-    }
-    let (title, subtitle) = compose(&parts);
-    deliver_local(
-        paths,
-        socket_path,
-        &pending.pane_id,
-        &pending.status,
-        title,
-        subtitle,
-    )
+    request_terminal_notification(client, &pending.pane_id, &pending.status, &parts);
+    Ok(())
 }
 
 /// Hook entrypoint for lifecycle events such as `pane.closed` that should

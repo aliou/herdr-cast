@@ -16,8 +16,8 @@ pane.agent_status_changed (manifest hook)
     → debounce: 2 s per pane+status (state dir)
     → deliver (first path that takes it wins)
         1. bridge::send_notification                    src/bridge/mod.rs
-        2. notification.show on the Herdr socket (sound = "none")
-        3. local macOS notifier (macOS only)
+        2. local macOS notifier (macOS only)
+        3. notification.show on the Herdr socket (sound = "none")
 ```
 
 Every delivery step fails open to the next, and Herdr enrichment is
@@ -50,19 +50,27 @@ through the status bundle with grouping `host:pane` and acks after apply.
 A missing relay socket is the normal case on the host itself and falls back
 silently.
 
-### Terminal notification (second)
-
-`notification.show` on the Herdr socket, `sound = "none"`. The body carries
-the forwarded payload (below). When the server reports `shown: true`, the
-notification already rendered in an attached client, and a macOS sender
-skips local delivery. On Linux this is the final path.
-
-### Local notifier (macOS fallback)
+### Local notifier (second, macOS)
 
 `notify::local` runs the bundled notifier for the status, grouped per
-pane and session, and records an outstanding-notification marker. Herdr
-requests never set a sound field; the bundled notifier owns the status
-sound.
+pane and session, and records an outstanding-notification marker. It is
+the only delivery path whose click carries the pane-focus command (below);
+a macOS sender tries it before `notification.show` so clicks focus the
+pane. On Linux this path does not exist. Herdr requests never set a sound
+field; the bundled notifier owns the status sound.
+
+Local delivery reports whether the notifier ran. A macOS sender falls
+through to `notification.show` when it cannot deliver — missing bundle,
+failed registration, notifier error — so a broken notifier never silently
+loses the notification and only ever costs a duplicate-free fallback.
+
+### Terminal notification (fallback)
+
+`notification.show` on the Herdr socket, `sound = "none"`. The body
+carries the forwarded payload (below); an attached client renders it,
+through the forwarder on macOS clients. A forwarded render's click only
+activates Ghostty, so on macOS this path is the fallback for local
+delivery. On Linux it is the final path.
 
 ## Clearing
 
