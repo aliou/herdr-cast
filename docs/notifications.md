@@ -11,13 +11,14 @@ override.
 pane.agent_status_changed (manifest hook)
   → notify::run                                        src/notify/hook.rs
     → events::PluginEvent::from_environment            src/events.rs
-    → filter: status in TRIGGER_STATUSES (blocked, done)
-    → enrich: pane.get / workspace.get over the Herdr socket
-    → debounce: 2 s per pane+status (state dir)
-    → deliver (first path that takes it wins)
-        1. bridge::send_notification                    src/bridge/mod.rs
-        2. local macOS notifier (macOS only)
-        3. notification.show on the Herdr socket (sound = "none")
+    → handle_event (state directory, event, client, delivery adapter)
+      → filter: status in TRIGGER_STATUSES (blocked, done)
+      → enrich: pane.get / workspace.get over the Herdr socket
+      → debounce: 2 s per pane+status (state dir)
+      → deliver (first path that takes it wins)
+          1. bridge::send_notification                  src/bridge/mod.rs
+          2. local macOS notifier (macOS only)
+          3. notification.show on the Herdr socket (sound = "none")
 ```
 
 Every delivery step fails open to the next, and Herdr enrichment is
@@ -144,3 +145,12 @@ Linux terminal notifications are not click-to-focus.
 All state lives in the injected plugin state directory: debounce files,
 outstanding-notification markers, lifecycle locks, and registration
 sentinels. Nothing is written to the source checkout.
+
+## Test interface
+
+The hook's private `handle_event` interface owns filtering, enrichment,
+debounce, and delivery order. Its delivery seam has a production adapter for
+the bridge and desktop and a recording adapter for tests. Socket fixtures
+exercise enrichment and the terminal adapter through isolated Unix sockets.
+Tests use private temporary state directories; they never call the production
+bridge or local notifier.

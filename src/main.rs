@@ -20,14 +20,7 @@ mod workspace;
 mod zoxide;
 
 #[cfg(test)]
-mod test_support {
-    use std::sync::Mutex;
-
-    /// Serializes tests that mutate process-global environment variables
-    /// (`HERDR_PLUGIN_STATE_DIR`, `HERDR_PLUGIN_EVENT_JSON`). Without this,
-    /// parallel cargo tests race on the shared env and intermittently fail.
-    pub static ENV_MUTEX: Mutex<()> = Mutex::new(());
-}
+mod test_support;
 
 fn main() {
     let mut arguments = std::env::args().skip(1);
@@ -108,7 +101,8 @@ fn pane_focused_hook() -> Result<(), String> {
         .as_ref()
         .and_then(events::PluginEvent::pane_id)
     {
-        if let Err(error) = recency::record(&pane_id) {
+        let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR").map(std::path::PathBuf::from);
+        if let Err(error) = recency::RecencyLog::new(state_dir.as_deref()).record(&pane_id) {
             failures.push(error);
         }
         notify::clear_delivered_for_pane(&pane_id);

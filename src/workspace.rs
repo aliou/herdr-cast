@@ -169,7 +169,8 @@ pub fn focus_existing() -> Result<(), String> {
         return Err("Herdr has no workspaces".to_string());
     }
     let panes = list_panes(&client)?;
-    let recency = crate::recency::load();
+    let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR").map(PathBuf::from);
+    let recency = crate::recency::RecencyLog::new(state_dir.as_deref()).load();
     let choices = picker_choices(workspaces, panes, &recency);
     let (target, view) = pick_with_detail(
         Picker {
@@ -177,14 +178,14 @@ pub fn focus_existing() -> Result<(), String> {
             empty_message: "No matching workspaces or panes",
             order: Some(OrderToggle {
                 labels: &["spaces", "agents", "panes"],
-                initial: load_workspace_picker_view(),
+                initial: load_workspace_picker_view(state_dir.as_deref()),
                 kind: ToggleKind::View,
             }),
         },
         choices,
         |_| None,
     )?;
-    save_workspace_picker_view(view)?;
+    save_workspace_picker_view(state_dir.as_deref(), view)?;
     let Some(target) = target else {
         return Ok(());
     };
@@ -210,8 +211,8 @@ fn socket_client() -> Result<SocketClient, String> {
     Ok(SocketClient::with_timeout(socket, SOCKET_TIMEOUT))
 }
 
-fn load_workspace_picker_view() -> usize {
-    let raw = workspace_picker_view_file()
+fn load_workspace_picker_view(state_dir: Option<&Path>) -> usize {
+    let raw = workspace_picker_view_file(state_dir)
         .and_then(|path| fs::read_to_string(path).ok())
         .unwrap_or_default();
     let label = raw.trim();
@@ -221,8 +222,8 @@ fn load_workspace_picker_view() -> usize {
         .unwrap_or(0)
 }
 
-fn save_workspace_picker_view(view: usize) -> Result<(), String> {
-    let Some(path) = workspace_picker_view_file() else {
+fn save_workspace_picker_view(state_dir: Option<&Path>, view: usize) -> Result<(), String> {
+    let Some(path) = workspace_picker_view_file(state_dir) else {
         return Ok(());
     };
     if let Some(parent) = path.parent() {
@@ -242,10 +243,8 @@ fn save_workspace_picker_view(view: usize) -> Result<(), String> {
     })
 }
 
-fn workspace_picker_view_file() -> Option<PathBuf> {
-    std::env::var_os("HERDR_PLUGIN_STATE_DIR")
-        .map(PathBuf::from)
-        .map(|directory| directory.join(WORKSPACE_PICKER_VIEW_FILE))
+fn workspace_picker_view_file(state_dir: Option<&Path>) -> Option<PathBuf> {
+    state_dir.map(|directory| directory.join(WORKSPACE_PICKER_VIEW_FILE))
 }
 
 fn list_workspaces(client: &SocketClient) -> Result<Vec<WorkspaceInfo>, String> {
@@ -941,34 +940,33 @@ mod tests {
 
     #[test]
     fn workspace_picker_view_persistence_round_trips_index_and_label() {
-        let _guard = crate::test_support::ENV_MUTEX.lock().unwrap();
-        let dir =
-            std::env::temp_dir().join(format!("cast-picker-view-test-{}", std::process::id()));
-        fs::create_dir_all(&dir).unwrap();
-        let previous = std::env::var_os("HERDR_PLUGIN_STATE_DIR");
-        std::env::set_var("HERDR_PLUGIN_STATE_DIR", &dir);
+        let dir = crate::test_support::TestDir::new();
+        let state_dir = Some(dir.path());
 
         // Unknown / missing label defaults to the primary view (0).
-        fs::write(dir.join(WORKSPACE_PICKER_VIEW_FILE), "bogus\n").unwrap();
-        assert_eq!(load_workspace_picker_view(), 0);
+        assert_eq!(load_workspace_picker_view(state_dir), 0);
+        fs::write(dir.path().join(WORKSPACE_PICKER_VIEW_FILE), "bogus\n").unwrap();
+        assert_eq!(load_workspace_picker_view(state_dir), 0);
 
-        save_workspace_picker_view(2).unwrap();
-        assert_eq!(load_workspace_picker_view(), 2);
+        save_workspace_picker_view(state_dir, 2).unwrap();
+        assert_eq!(load_workspace_picker_view(state_dir), 2);
         assert_eq!(
-            fs::read_to_string(dir.join(WORKSPACE_PICKER_VIEW_FILE)).unwrap(),
+            fs::read_to_string(dir.path().join(WORKSPACE_PICKER_VIEW_FILE)).unwrap(),
             "panes\n"
         );
 
         // Backward compatibility: a pre-existing "agents" file loads as view 1.
-        fs::write(dir.join(WORKSPACE_PICKER_VIEW_FILE), "agents\n").unwrap();
-        assert_eq!(load_workspace_picker_view(), 1);
+        fs::write(dir.path().join(WORKSPACE_PICKER_VIEW_FILE), "agents\n").unwrap();
+        assert_eq!(load_workspace_picker_view(state_dir), 1);
 
-        if let Some(previous) = previous {
-            std::env::set_var("HERDR_PLUGIN_STATE_DIR", previous);
-        } else {
-            std::env::remove_var("HERDR_PLUGIN_STATE_DIR");
-        }
-        let _ = fs::remove_dir_all(&dir);
+        save_workspace_picker_view(state_dir, usize::MAX).unwrap();
+        assert_eq!(load_workspace_picker_view(state_dir), 0);
+    }
+
+    #[test]
+    fn workspace_picker_view_without_state_uses_the_primary_view() {
+        save_workspace_picker_view(None, 2).unwrap();
+        assert_eq!(load_workspace_picker_view(None), 0);
     }
 
     fn workspace(id: &str, label: &str) -> WorkspaceInfo {

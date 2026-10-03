@@ -32,6 +32,7 @@ struct NotificationShowParams {
 
 /// A triggered notification, enriched and past the debounce, ready for
 /// delivery.
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Pending {
     pane_id: String,
     status: String,
@@ -51,6 +52,22 @@ impl Pending {
     }
 }
 
+/// Delivery varies across the real desktop/bridge and a recording test
+/// adapter. Keep this seam private: callers submit events, not delivery steps.
+trait Delivery {
+    fn try_bridge(&mut self, pending: &Pending) -> bool;
+    fn try_local(&mut self, pending: &Pending) -> Result<bool, String>;
+    fn terminal(&mut self, pending: &Pending);
+}
+
+struct ProductionDelivery<'a> {
+    paths: &'a Paths,
+    socket_path: Option<&'a str>,
+    client: Option<&'a SocketClient>,
+    host: String,
+    session: Option<String>,
+}
+
 pub fn run() -> Result<(), String> {
     let paths = Paths::from_environment()?;
     std::fs::create_dir_all(&paths.state)
@@ -64,16 +81,44 @@ pub fn run() -> Result<(), String> {
     let client = socket_path
         .as_deref()
         .map(|path| SocketClient::with_timeout(path, Duration::from_millis(250)));
-    let Some(pending) = prepare(&paths, &event, client.as_ref())? else {
+    let mut delivery = ProductionDelivery {
+        paths: &paths,
+        socket_path: socket_path.as_deref(),
+        client: client.as_ref(),
+        host: origin_host(),
+        session: std::env::var("HERDR_SESSION")
+            .ok()
+            .filter(|session| !session.is_empty()),
+    };
+    handle_event(&paths.state, &event, client.as_ref(), &mut delivery)
+}
+
+/// Process one event through the whole notification policy. The state
+/// directory must exist. Enrichment is best-effort; delivery stops at the
+/// first accepting path. Local adapter errors retain the hook's error mode.
+fn handle_event(
+    state_dir: &Path,
+    event: &crate::events::PluginEvent,
+    client: Option<&SocketClient>,
+    delivery: &mut impl Delivery,
+) -> Result<(), String> {
+    let Some(pending) = prepare(state_dir, event, client)? else {
         return Ok(());
     };
-    deliver(&paths, socket_path.as_deref(), client.as_ref(), &pending)
+    if delivery.try_bridge(&pending) {
+        return Ok(());
+    }
+    if delivery.try_local(&pending)? {
+        return Ok(());
+    }
+    delivery.terminal(&pending);
+    Ok(())
 }
 
 /// Filter, enrich, and debounce one agent status event. `None` means the
 /// event does not notify.
 fn prepare(
-    paths: &Paths,
+    state_dir: &Path,
     event: &crate::events::PluginEvent,
     client: Option<&SocketClient>,
 ) -> Result<Option<Pending>, String> {
@@ -117,7 +162,7 @@ fn prepare(
         .unwrap_or_default()
         .to_string();
 
-    if is_debounced(&paths.state, &pane_id, &status)? {
+    if is_debounced(state_dir, &pane_id, &status)? {
         return Ok(None);
     }
     // The title/subtitle carry no status glyphs: the per-status bundle icon
@@ -136,60 +181,55 @@ fn prepare(
     }))
 }
 
-/// Try each delivery path in order until one takes the notification:
-///
-/// 1. the bridge to the host Mac, when a relay socket exists on this
-///    machine;
-/// 2. on macOS, the local notifier: its click carries the pane-focus
-///    command, which `notification.show` renders cannot express;
-/// 3. the server's `notification.show`, which an attached client renders
-///    (through the forwarder on macOS clients);
-fn deliver(
-    paths: &Paths,
-    socket_path: Option<&str>,
-    client: Option<&SocketClient>,
-    pending: &Pending,
-) -> Result<(), String> {
-    match bridge::send_notification(bridge::wire::Notification {
-        id: 0,
-        host: origin_host(),
-        pane: pending.pane_id.clone(),
-        status: pending.status.clone(),
-        action: pending.action.clone(),
-        workspace: pending.workspace.clone(),
-        project: pending.project.clone(),
-        socket: socket_path.unwrap_or_default().to_string(),
-        session: std::env::var("HERDR_SESSION")
-            .ok()
-            .filter(|session| !session.is_empty()),
-    }) {
-        Ok(()) => return Ok(()),
-        // The usual case on the host Mac itself; not worth a log line.
-        Err(bridge::Unavailable::NoSocket) => {}
-        Err(error) => log(&format!("bridge: {error}; using notification.show")),
+impl Delivery for ProductionDelivery<'_> {
+    fn try_bridge(&mut self, pending: &Pending) -> bool {
+        match bridge::send_notification(bridge::wire::Notification {
+            id: 0,
+            host: self.host.clone(),
+            pane: pending.pane_id.clone(),
+            status: pending.status.clone(),
+            action: pending.action.clone(),
+            workspace: pending.workspace.clone(),
+            project: pending.project.clone(),
+            socket: self.socket_path.unwrap_or_default().to_string(),
+            session: self.session.clone(),
+        }) {
+            Ok(()) => true,
+            // The usual case on the host Mac itself; not worth a log line.
+            Err(bridge::Unavailable::NoSocket) => false,
+            Err(error) => {
+                log(&format!("bridge: {error}; using notification.show"));
+                false
+            }
+        }
     }
-    // On macOS the local notifier goes before `notification.show`: only
-    // the local path's click carries `herdr-cast focus <socket> <pane>`,
-    // while the forwarder rendering of `notification.show` can only
-    // activate the Ghostty app. `notification.show` remains the fallback
-    // when the local notifier cannot deliver.
-    if cfg!(target_os = "macos") {
+
+    fn try_local(&mut self, pending: &Pending) -> Result<bool, String> {
+        if !cfg!(target_os = "macos") {
+            return Ok(false);
+        }
+        // Only this path carries the pane-focus command on a click. The
+        // terminal forwarder can only activate Ghostty.
         let parts = pending.parts();
         let (title, subtitle) = compose(&parts);
-        if deliver_local(
-            paths,
-            socket_path,
+        deliver_local(
+            self.paths,
+            self.socket_path,
             &pending.pane_id,
             &pending.status,
             title,
             subtitle,
-        )? {
-            return Ok(());
-        }
+        )
     }
-    let parts = pending.parts();
-    request_terminal_notification(client, &pending.pane_id, &pending.status, &parts);
-    Ok(())
+
+    fn terminal(&mut self, pending: &Pending) {
+        request_terminal_notification(
+            self.client,
+            &pending.pane_id,
+            &pending.status,
+            &pending.parts(),
+        );
+    }
 }
 
 /// Hook entrypoint for lifecycle events such as `pane.closed` that should
@@ -208,8 +248,7 @@ pub fn clear_from_event() -> Result<(), String> {
 }
 
 /// Request a terminal notification through the server's `notification.show`.
-/// Returns whether the server reported it shown to an attached client shell;
-/// callers on platforms with a local notifier use that to skip a duplicate.
+/// Returns whether the server reported it shown to an attached client shell.
 fn request_terminal_notification(
     client: Option<&SocketClient>,
     pane_id: &str,
@@ -313,24 +352,276 @@ fn is_debounced(state_dir: &Path, pane_id: &str, status: &str) -> Result<bool, S
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::PluginEvent;
+    use crate::test_support::{SocketFixture, TestDir};
+
+    #[derive(Default)]
+    struct RecordingDelivery {
+        bridge_accepts: bool,
+        local_accepts: bool,
+        local_error: Option<String>,
+        attempts: Vec<(&'static str, Pending)>,
+    }
+
+    impl Delivery for RecordingDelivery {
+        fn try_bridge(&mut self, pending: &Pending) -> bool {
+            self.attempts.push(("bridge", pending.clone()));
+            self.bridge_accepts
+        }
+
+        fn try_local(&mut self, pending: &Pending) -> Result<bool, String> {
+            self.attempts.push(("local", pending.clone()));
+            match &self.local_error {
+                Some(error) => Err(error.clone()),
+                None => Ok(self.local_accepts),
+            }
+        }
+
+        fn terminal(&mut self, pending: &Pending) {
+            self.attempts.push(("terminal", pending.clone()));
+        }
+    }
+
+    fn event(pane: &str, status: &str) -> PluginEvent {
+        PluginEvent::from_json(
+            &json!({
+                "type": "pane.agent_status_changed",
+                "data": {
+                    "type": "pane_agent_status_changed",
+                    "pane_id": pane,
+                    "workspace_id": "w:event",
+                    "agent_status": status,
+                    "agent": "pi"
+                }
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
 
     #[test]
-    fn terminal_notification_request_disables_sound() {
-        let params = NotificationShowParams {
-            title: "Pi done".into(),
-            body: Some("cast · herdr-cast".into()),
-            position: None,
-            sound: "none",
+    fn triggering_events_keep_their_identity_when_enrichment_is_unavailable() {
+        let dir = TestDir::new();
+        let mut delivery = RecordingDelivery {
+            bridge_accepts: true,
+            ..Default::default()
         };
-
+        handle_event(
+            dir.path(),
+            &event("p:background", "done"),
+            None,
+            &mut delivery,
+        )
+        .unwrap();
         assert_eq!(
-            serde_json::to_value(params).unwrap(),
-            serde_json::json!({
-                "title": "Pi done",
-                "body": "cast · herdr-cast",
-                "position": null,
-                "sound": "none"
-            })
+            delivery.attempts,
+            vec![(
+                "bridge",
+                Pending {
+                    pane_id: "p:background".into(),
+                    status: "done".into(),
+                    action: "pi done".into(),
+                    workspace: "w:event".into(),
+                    project: String::new(),
+                }
+            )]
         );
+    }
+
+    #[test]
+    fn irrelevant_or_incomplete_events_do_not_attempt_delivery() {
+        let dir = TestDir::new();
+        let mut delivery = RecordingDelivery::default();
+        for payload in [
+            json!({ "data": { "pane_id": "p:1", "agent_status": "working" } }),
+            json!({ "data": { "agent_status": "done" } }),
+            json!({ "data": { "pane_id": "p:1" } }),
+        ] {
+            let event = PluginEvent::from_json(&payload.to_string()).unwrap();
+            handle_event(dir.path(), &event, None, &mut delivery).unwrap();
+        }
+        assert!(delivery.attempts.is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn debounce_is_scoped_to_both_pane_and_status() {
+        let dir = TestDir::new();
+        let mut delivery = RecordingDelivery {
+            bridge_accepts: true,
+            ..Default::default()
+        };
+        for (pane, status) in [
+            ("p:1", "done"),
+            ("p:1", "done"),
+            ("p:1", "blocked"),
+            ("p:2", "done"),
+        ] {
+            handle_event(dir.path(), &event(pane, status), None, &mut delivery).unwrap();
+        }
+        let delivered: Vec<_> = delivery
+            .attempts
+            .iter()
+            .map(|(_, pending)| (pending.pane_id.as_str(), pending.status.as_str()))
+            .collect();
+        assert_eq!(
+            delivered,
+            vec![("p:1", "done"), ("p:1", "blocked"), ("p:2", "done")]
+        );
+    }
+
+    #[test]
+    fn delivery_stops_at_the_first_accepting_path() {
+        for (bridge_accepts, local_accepts, expected) in [
+            (true, false, vec!["bridge"]),
+            (false, true, vec!["bridge", "local"]),
+            (false, false, vec!["bridge", "local", "terminal"]),
+        ] {
+            let dir = TestDir::new();
+            let mut delivery = RecordingDelivery {
+                bridge_accepts,
+                local_accepts,
+                ..Default::default()
+            };
+            handle_event(dir.path(), &event("p:1", "blocked"), None, &mut delivery).unwrap();
+            let attempts: Vec<_> = delivery.attempts.iter().map(|(path, _)| *path).collect();
+            assert_eq!(attempts, expected);
+            assert!(delivery
+                .attempts
+                .iter()
+                .all(|(_, pending)| pending.action == "pi needs input"));
+        }
+    }
+
+    #[test]
+    fn local_adapter_errors_keep_the_hooks_error_mode() {
+        let dir = TestDir::new();
+        let mut delivery = RecordingDelivery {
+            local_error: Some("cannot locate executable".into()),
+            ..Default::default()
+        };
+        let result = handle_event(dir.path(), &event("p:1", "done"), None, &mut delivery);
+        assert_eq!(result, Err("cannot locate executable".into()));
+        let attempts: Vec<_> = delivery.attempts.iter().map(|(path, _)| *path).collect();
+        assert_eq!(attempts, vec!["bridge", "local"]);
+    }
+
+    #[test]
+    fn enrichment_uses_the_event_pane_and_workspace_not_the_focused_pane() {
+        let dir = TestDir::new();
+        let server = SocketFixture::new(vec![
+            json!({ "result": { "pane": {
+                "pane_id": "p:background", "workspace_id": "w:other",
+                "agent_status": "working", "agent": "other", "focused": false,
+                "cwd": "/code/herdr-cast"
+            } } }),
+            json!({ "result": { "workspace": { "label": "cast" } } }),
+        ]);
+        let mut delivery = RecordingDelivery {
+            bridge_accepts: true,
+            ..Default::default()
+        };
+        handle_event(
+            dir.path(),
+            &event("p:background", "done"),
+            Some(&server.client()),
+            &mut delivery,
+        )
+        .unwrap();
+        let pending = &delivery.attempts[0].1;
+        assert_eq!(pending.pane_id, "p:background");
+        assert_eq!(pending.status, "done");
+        assert_eq!(pending.action, "pi done");
+        assert_eq!(pending.workspace, "cast");
+        assert_eq!(pending.project, "herdr-cast");
+        let requests = server.finish();
+        assert_eq!(requests[0]["method"], "pane.get");
+        assert_eq!(requests[0]["params"], json!({ "pane_id": "p:background" }));
+        assert_eq!(requests[1]["method"], "workspace.get");
+        assert_eq!(requests[1]["params"], json!({ "workspace_id": "w:event" }));
+    }
+
+    #[test]
+    fn missing_event_fields_are_enriched_without_repeating_the_pane_query() {
+        let dir = TestDir::new();
+        let server = SocketFixture::new(vec![
+            json!({ "result": { "pane": {
+                "workspace_id": "w:from-pane", "agent_status": "blocked", "agent": "codex"
+            } } }),
+            json!({ "error": { "code": "not_found", "message": "workspace gone" } }),
+        ]);
+        let event = PluginEvent::from_json(r#"{"data":{"pane_id":"p:1"}}"#).unwrap();
+        let mut delivery = RecordingDelivery {
+            bridge_accepts: true,
+            ..Default::default()
+        };
+        handle_event(dir.path(), &event, Some(&server.client()), &mut delivery).unwrap();
+        let pending = &delivery.attempts[0].1;
+        assert_eq!(pending.action, "codex needs input");
+        assert_eq!(pending.workspace, "w:from-pane");
+        assert_eq!(server.finish().len(), 2);
+    }
+
+    #[test]
+    fn failed_enrichment_does_not_drop_a_trigger() {
+        let dir = TestDir::new();
+        let server = SocketFixture::new(vec![
+            json!({ "error": { "code": "not_found", "message": "pane gone" } }),
+            json!({ "error": { "code": "not_found", "message": "workspace gone" } }),
+        ]);
+        let mut delivery = RecordingDelivery {
+            bridge_accepts: true,
+            ..Default::default()
+        };
+        handle_event(
+            dir.path(),
+            &event("p:1", "done"),
+            Some(&server.client()),
+            &mut delivery,
+        )
+        .unwrap();
+        assert_eq!(delivery.attempts[0].1.action, "pi done");
+        assert_eq!(delivery.attempts[0].1.workspace, "w:event");
+        assert_eq!(server.finish().len(), 2);
+    }
+
+    #[test]
+    fn terminal_adapter_sends_a_silent_forwarded_payload() {
+        let dir = TestDir::new();
+        let paths = Paths {
+            state: dir.path().into(),
+            assets: dir.path().join("unused"),
+        };
+        let server = SocketFixture::new(vec![json!({ "result": {
+            "type": "notification_show", "shown": true, "reason": "shown"
+        } })]);
+        let client = server.client();
+        let mut delivery = ProductionDelivery {
+            paths: &paths,
+            socket_path: None,
+            client: Some(&client),
+            host: "test-host".into(),
+            session: None,
+        };
+        // Never call the production bridge or local methods in a test.
+        delivery.terminal(&Pending {
+            pane_id: "p:1".into(),
+            status: "done".into(),
+            action: "pi done".into(),
+            workspace: "cast".into(),
+            project: "herdr-cast".into(),
+        });
+        let requests = server.finish();
+        let request = &requests[0];
+        assert_eq!(request["method"], "notification.show");
+        assert_eq!(request["params"]["sound"], "none");
+        assert_eq!(request["params"]["title"], "pi done");
+        assert_eq!(request["params"]["position"], Value::Null);
+        let body: Value =
+            serde_json::from_str(request["params"]["body"].as_str().unwrap()).unwrap();
+        assert_eq!(body["a"], "pi done");
+        assert_eq!(body["w"], "cast");
+        assert_eq!(body["p"], "herdr-cast");
+        assert_eq!(body["s"], "done");
     }
 }

@@ -98,6 +98,12 @@ Rows carry their Space's machine tokens in search text and context labels,
 read from server-held tokens via `space::describe` — a consumer never
 re-derives a label from raw fields.
 
+The picker resolves the injected state directory once for both its saved
+view and `recency::RecencyLog`. The log owns persistence, duplicate removal,
+and its 256-entry limit. Without a state directory, the picker starts in
+`spaces` and uses an empty focus history. Persistence tests pass private
+temporary directories directly and leave the process environment untouched.
+
 ### New workspace (`directory-workspace`)
 
 `src/workspace.rs` + `src/zoxide.rs`: candidates are every `zoxide query -ls`
