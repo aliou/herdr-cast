@@ -226,7 +226,7 @@ pub(crate) fn clear_delivered_for_pane(pane_id: &str) {
     clear_delivered_with_paths(&paths, &group);
 }
 
-fn clear_delivered_with_paths(paths: &Paths, group: &str) {
+pub(crate) fn clear_delivered_with_paths(paths: &Paths, group: &str) {
     for status in TRIGGER_STATUSES {
         let Some(_lifecycle_lock) = notification_lifecycle_lock(&paths.state, group, status) else {
             continue;
@@ -276,7 +276,7 @@ fn local_notification_group(socket_path: Option<&str>, pane_id: &str) -> String 
     format!("cast-local-{:016x}-{pane_id}", stable_hash(&session))
 }
 
-fn mark_notification_outstanding(state_dir: &Path, group: &str, status: &str) {
+pub(crate) fn mark_notification_outstanding(state_dir: &Path, group: &str, status: &str) {
     let marker = outstanding_notification_path(state_dir, group, status);
     if let Err(error) = fs::write(&marker, []) {
         log(&format!(

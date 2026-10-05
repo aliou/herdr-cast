@@ -75,18 +75,29 @@ delivery. On Linux it is the final path.
 
 ## Clearing
 
-- `pane.focused` on a pane clears that pane's delivered local macOS
-  notification (`clear_delivered_for_pane`, called from the coordinator in
+Reading a pane marks its notification as handled wherever it showed:
+
+- `pane.focused` on a pane clears that pane's delivered notification
+  (`clear_delivered_for_pane`, called from the coordinator in
   `src/main.rs`).
 - `pane.closed` clears it because it is no longer actionable
   (`clear-notification` → `clear_from_event`).
+- Both run the same combined clear: local macOS delivery state first, then
+  a `Dismiss` frame over the bridge so the host Mac removes what it
+  delivered for the pane. The bridge half fails soft — no bridge socket is
+  the normal case on the host itself.
 - Delivery uses one bundle identity per triggering status, so each
   outstanding bundle removes its own pane group. Local group ids include a
   hash of the Herdr socket (or session name), so one session cannot clear
-  another's notification.
+  another's notification. Bridged groups are `host:pane`, so one machine
+  cannot clear another's.
 
 Clearing is best-effort: a notifier that cannot remove keeps the
 outstanding marker.
+
+Bridged delivery records the same outstanding marker on the host, so the
+`Dismiss` frame removes only what was actually delivered and a pane that
+never notified costs no notifier spawn.
 
 ## Identity bundles
 

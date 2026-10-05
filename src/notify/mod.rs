@@ -10,12 +10,24 @@ mod hook;
 mod local;
 mod paths;
 
-pub(crate) use bridged::{deliver_bridged, prepare_bridged_delivery, BridgeClick};
+pub(crate) use bridged::{deliver_bridged, dismiss_bridged, prepare_bridged_delivery, BridgeClick};
 pub use focus::focus;
 pub(crate) use focus::raise_ghostty_tab;
 pub use forwarder::forward;
 pub use hook::{clear_from_event, run};
-pub(crate) use local::{clear_delivered_for_pane, wait_with_timeout};
+pub(crate) use local::wait_with_timeout;
+
+/// Clear a pane's delivered notification everywhere it went: the local
+/// macOS delivery state, and the host Mac's bridged copy when this machine
+/// is connected to one — the pane was read, so its notification is handled
+/// wherever it showed. Both halves fail soft; clearing is best-effort.
+pub(crate) fn clear_delivered_for_pane(pane_id: &str) {
+    local::clear_delivered_for_pane(pane_id);
+    match crate::bridge::send_dismiss(&hook::origin_host(), pane_id) {
+        Ok(()) | Err(crate::bridge::Unavailable::NoSocket) => {}
+        Err(error) => log(&format!("bridge dismiss for {pane_id}: {error}")),
+    }
+}
 
 /// The agent statuses that trigger a notification. Keep personal policy
 /// constants here; there is no config file or per-setting environment

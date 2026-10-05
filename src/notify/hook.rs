@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use super::compose::{compose, NotificationParts};
 use super::forwarder::forwarded_body;
-use super::local::{clear_delivered_for_pane, deliver_local};
+use super::local::deliver_local;
 use super::paths::Paths;
 use super::{log, DirectoryLock, TRIGGER_STATUSES};
 use crate::api::SocketClient;
@@ -243,7 +243,7 @@ pub fn clear_from_event() -> Result<(), String> {
         log("dropped notification-clear event without data.pane_id");
         return Ok(());
     };
-    clear_delivered_for_pane(&pane_id);
+    super::clear_delivered_for_pane(&pane_id);
     Ok(())
 }
 

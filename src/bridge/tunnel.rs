@@ -157,7 +157,7 @@ fn serve<R: Read, W: Write + Send + 'static>(
     };
     let hello = super::hello(
         &super::this_host(),
-        &[wire::KIND_NOTIFY, wire::KIND_PASTEBOARD],
+        &[wire::KIND_NOTIFY, wire::KIND_DISMISS, wire::KIND_PASTEBOARD],
     );
     if let Err(error) = wire::write_frame(&mut writer, &hello, None) {
         return Outcome::Failed(format!("failed to greet the relay: {error}"));

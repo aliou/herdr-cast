@@ -52,8 +52,9 @@ on = "workspace.focused"
 command = ["herdr-cast", "sync-space"]
 
 # React to focus changes. One coordinator fans out to every feature that
-# cares: the recency log for the workspace picker's ordering, clearing a
-# delivered macOS notification for the visited pane, and an instant window
+# cares: the recency log for the workspace picker's ordering, clearing the
+# visited pane's delivered notification (locally and on a bridged host), and
+# an instant window
 # title refresh (the per-session title daemon keeps it current between
 # events; Herdr withholds `pane.updated`, so only its poll sees a program
 # setting a new terminal title).

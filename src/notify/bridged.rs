@@ -6,7 +6,10 @@
 use std::path::PathBuf;
 
 use super::compose::{bundle_variant, notifier_argv};
-use super::local::{ensure_notifier_registered, run_notifier};
+use super::local::{
+    clear_delivered_with_paths, ensure_notifier_registered, mark_notification_outstanding,
+    run_notifier,
+};
 use super::paths::Paths;
 use super::{log, shell_quote};
 use crate::bridge;
@@ -29,6 +32,14 @@ pub(crate) fn deliver_bridged(
     click: &BridgeClick,
 ) -> Result<(), String> {
     let paths = Paths::for_client()?;
+    deliver_bridged_with_paths(&paths, notification, click)
+}
+
+fn deliver_bridged_with_paths(
+    paths: &Paths,
+    notification: &bridge::wire::Notification,
+    click: &BridgeClick,
+) -> Result<(), String> {
     let variant = bundle_variant(&notification.status);
     let notifier = paths.notifier(variant);
     if !notifier.is_file() {
@@ -48,24 +59,52 @@ pub(crate) fn deliver_bridged(
         project: &notification.project,
         host: Some(&host),
     };
-    let group = format!("{host}:{}", notification.pane);
+    let group = bridged_group(&host, &notification.pane);
     // Older senders do not report their Herdr socket; their click can only
     // raise Ghostty.
-    if notification.socket.is_empty() {
-        let argv = notifier_argv(
+    let argv = if notification.socket.is_empty() {
+        notifier_argv(
             &parts,
             Some(&group),
             Some(&notification.status),
             Some(ACTIVATE_BUNDLE_ID),
-        );
-        return run_notifier(&notifier, &argv);
+        )
+    } else {
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
+        let mut argv = notifier_argv(&parts, Some(&group), Some(&notification.status), None);
+        argv.push("-execute".to_string());
+        argv.push(bridge_click_command(&executable, click, notification));
+        argv
+    };
+    run_notifier(&notifier, &argv)?;
+    // Record the delivery so a Dismiss from the remote — the pane was
+    // focused or closed there — removes exactly this group.
+    mark_notification_outstanding(&paths.state, &group, &notification.status);
+    Ok(())
+}
+
+/// The group bridged delivery used for a remote pane's notifications.
+fn bridged_group(host: &str, pane: &str) -> String {
+    format!("{host}:{pane}")
+}
+
+/// Remove what bridged delivery posted for a pane, after the pane handled
+/// it on the remote. Markers gate the removal: a pane that never notified
+/// costs no notifier spawn. Best-effort like local clearing: a notifier
+/// that cannot remove keeps its marker.
+pub(crate) fn dismiss_bridged(host: &str, pane: &str) -> Result<(), String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
     }
-    let executable = std::env::current_exe()
-        .map_err(|error| format!("failed to locate herdr-cast executable: {error}"))?;
-    let mut argv = notifier_argv(&parts, Some(&group), Some(&notification.status), None);
-    argv.push("-execute".to_string());
-    argv.push(bridge_click_command(&executable, click, notification));
-    run_notifier(&notifier, &argv)
+    let paths = Paths::for_client()?;
+    dismiss_bridged_with_paths(&paths, host, pane);
+    Ok(())
+}
+
+fn dismiss_bridged_with_paths(paths: &Paths, host: &str, pane: &str) {
+    let host = crate::daemon::short_host(host).unwrap_or_else(|| host.to_string());
+    clear_delivered_with_paths(paths, &bridged_group(&host, pane));
 }
 
 fn bridge_click_command(
@@ -119,6 +158,85 @@ fn ensure_notifier_registered_all() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    #[cfg(unix)]
+    fn bridged_delivery_is_marked_and_dismissed_by_group() {
+        let root = std::env::temp_dir().join(format!(
+            "cast-bridged-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let paths = Paths {
+            state: root.join("state"),
+            assets: root.join("assets"),
+        };
+        std::fs::create_dir_all(&paths.state).unwrap();
+        let notifier = paths.notifier(Some("blocked"));
+        std::fs::create_dir_all(notifier.parent().unwrap()).unwrap();
+        let log_path = root.join("args");
+        std::fs::write(
+            &notifier,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\n",
+                log_path.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&notifier, PermissionsExt::from_mode(0o755)).unwrap();
+
+        let notification = bridge::wire::Notification {
+            id: 1,
+            host: "donut.ts.net".into(),
+            pane: "w1:p9".into(),
+            status: "blocked".into(),
+            action: "pi needs input".into(),
+            workspace: "cast".into(),
+            project: "herdr-cast".into(),
+            socket: String::new(),
+            session: None,
+        };
+        let click = BridgeClick {
+            control: root.join("bridge-control.sock"),
+            key: "me@donut:22".into(),
+        };
+        deliver_bridged_with_paths(&paths, &notification, &click).unwrap();
+        let delivered = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            delivered.contains("-group\ndonut:w1:p9\n"),
+            "delivery groups by short host and pane: {delivered}"
+        );
+
+        // A pane that never notified costs no notifier spawn.
+        dismiss_bridged_with_paths(&paths, "donut.ts.net", "w1:elsewhere");
+        assert!(!std::fs::read_to_string(&log_path)
+            .unwrap()
+            .contains("-remove"));
+
+        dismiss_bridged_with_paths(&paths, "donut.ts.net", "w1:p9");
+        let cleared = std::fs::read_to_string(&log_path).unwrap();
+        assert!(
+            cleared.contains("-remove\ndonut:w1:p9\n"),
+            "dismiss removes the delivered group: {cleared}"
+        );
+
+        // The marker is gone: a repeat dismiss does not remove again.
+        dismiss_bridged_with_paths(&paths, "donut.ts.net", "w1:p9");
+        assert_eq!(
+            std::fs::read_to_string(&log_path)
+                .unwrap()
+                .matches("-remove")
+                .count(),
+            1
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn quotes_every_bridge_click_argument_for_the_shell() {

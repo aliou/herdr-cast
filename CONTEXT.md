@@ -38,7 +38,8 @@ misunderstanding.
 - **Sender** — code on the remote that tries the bridge first (the notify
   hook, the pasteboard watcher) and falls back to non-bridge paths.
 - **Frame** — one wire message: a JSON header line plus an optional raw
-  body. `Hello`, `Ping`, `Bye`, `Notify`, `Pasteboard`, `Ack`, `Focus`.
+  body. `Hello`, `Ping`, `Bye`, `Notify`, `Dismiss`, `Pasteboard`, `Ack`,
+  `Focus`.
 - **Ack** — the host's reply after applying a request, never before.
 - **Control socket** — `bridge-control.sock` in the host's plugin state
   directory; the notification click talks to it so the host daemon sends a
@@ -51,8 +52,8 @@ misunderstanding.
   frontmost-app state are irrelevant by design.
 - **Debounce** — the two-second per pane-and-status window that collapses
   duplicate events. The only filter besides the trigger set.
-- **Delivery chain** — bridge first, then the server's `notification.show`
-  (rendered by an attached client), then the local macOS notifier. Every
+- **Delivery chain** — bridge first, then the local macOS notifier, then
+  the server's `notification.show` (rendered by an attached client). Every
   step fails open to the next.
 - **Bridged delivery** — the host applying a notification that arrived over
   a link, through the status's `HerdrNotify` bundle.
@@ -66,8 +67,9 @@ misunderstanding.
 - **Identity bundle** — one `HerdrNotify*.app` directory per status
   (`HerdrNotify`, `-blocked`, `-done`). macOS takes a notification's icon
   from the sender bundle, so the status is visual, never a glyph in text.
-- **Outstanding notification** — the state marker recorded after local macOS
-  delivery so a later focus or pane close can remove that group.
+- **Outstanding notification** — the state marker recorded after a macOS
+  delivery (local, and bridged on the host) so a later focus or pane close
+  can remove that group, locally or via a `Dismiss` frame.
 
 ## Runtime
 

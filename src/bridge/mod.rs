@@ -50,6 +50,22 @@ pub fn send_notification(notification: wire::Notification) -> Result<(), Unavail
     send::send(&socket, &Frame::Notify(notification), None)
 }
 
+/// Tell the host to remove what it delivered for `pane`. `host` must match
+/// the `Notification.host` the delivery carried so the host resolves the
+/// same notification group.
+pub fn send_dismiss(host: &str, pane: &str) -> Result<(), Unavailable> {
+    let socket = socket_path().ok_or(Unavailable::NoSocket)?;
+    send::send(
+        &socket,
+        &Frame::Dismiss {
+            id: 0,
+            host: host.to_string(),
+            pane: pane.to_string(),
+        },
+        None,
+    )
+}
+
 /// Only the macOS pasteboard watcher sends pasteboard copies.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn send_pasteboard(text: &str) -> Result<(), Unavailable> {
@@ -346,6 +362,16 @@ mod tests {
         let harness = start(&socket, b"reject me");
 
         send::send(&socket, &Frame::Notify(notification()), None).unwrap();
+        send::send(
+            &socket,
+            &Frame::Dismiss {
+                id: 0,
+                host: "donut".into(),
+                pane: "w1:p1".into(),
+            },
+            None,
+        )
+        .unwrap();
         let text: Vec<u8> = "é漢\n".repeat(100_000).into_bytes();
         assert!(text.len() > 192 * 1024);
         send::send(&socket, &pasteboard_frame(text.len()), Some(&text)).unwrap();
@@ -357,13 +383,22 @@ mod tests {
 
         {
             let applied = harness.applied.lock().unwrap();
-            assert_eq!(applied.len(), 2);
+            assert_eq!(applied.len(), 3);
             let Frame::Notify(received) = &applied[0].0 else {
                 panic!("expected a notification");
             };
             assert_eq!(received.pane, "w1:p1");
             assert_eq!(received.host, "donut");
-            assert_eq!(applied[1].1.as_deref(), Some(text.as_slice()));
+            assert_eq!(
+                applied[1].0,
+                Frame::Dismiss {
+                    id: 2,
+                    host: "donut".into(),
+                    pane: "w1:p1".into(),
+                },
+                "the relay rewrites request ids in order"
+            );
+            assert_eq!(applied[2].1.as_deref(), Some(text.as_slice()));
         }
 
         harness.stop.store(true, Ordering::SeqCst);

@@ -386,6 +386,7 @@ fn apply(
 ) -> Result<(), String> {
     match frame {
         Frame::Notify(notification) => crate::notify::deliver_bridged(notification, click),
+        Frame::Dismiss { host, pane, .. } => crate::notify::dismiss_bridged(host, pane),
         Frame::Pasteboard { mime, .. } if mime == wire::TEXT_MIME => {
             set_pasteboard(body.unwrap_or_default())
         }

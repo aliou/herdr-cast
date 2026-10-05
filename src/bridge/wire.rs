@@ -13,6 +13,7 @@ pub const MAX_HEADER: usize = 16 * 1024;
 pub const MAX_BODY: usize = 1024 * 1024;
 
 pub const KIND_NOTIFY: &str = "notify";
+pub const KIND_DISMISS: &str = "dismiss";
 pub const KIND_PASTEBOARD: &str = "pasteboard";
 pub const KIND_FOCUS: &str = "focus";
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
@@ -36,6 +37,13 @@ pub enum Frame {
         reason: String,
     },
     Notify(Notification),
+    /// A pane's notification was handled on the remote (focus or close):
+    /// the host removes what it delivered for it.
+    Dismiss {
+        id: u64,
+        host: String,
+        pane: String,
+    },
     /// Followed by `len` bytes of `mime` content.
     Pasteboard {
         id: u64,
@@ -97,7 +105,9 @@ impl Frame {
     pub fn request_id(&self) -> Option<u64> {
         match self {
             Frame::Notify(notification) => Some(notification.id),
-            Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => Some(*id),
+            Frame::Dismiss { id, .. } | Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => {
+                Some(*id)
+            }
             _ => None,
         }
     }
@@ -106,7 +116,9 @@ impl Frame {
     pub fn with_request_id(mut self, new_id: u64) -> Self {
         match &mut self {
             Frame::Notify(notification) => notification.id = new_id,
-            Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => *id = new_id,
+            Frame::Dismiss { id, .. } | Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => {
+                *id = new_id
+            }
             _ => {}
         }
         self
@@ -116,6 +128,7 @@ impl Frame {
     pub fn request_kind(&self) -> Option<&'static str> {
         match self {
             Frame::Notify(_) => Some(KIND_NOTIFY),
+            Frame::Dismiss { .. } => Some(KIND_DISMISS),
             Frame::Pasteboard { .. } => Some(KIND_PASTEBOARD),
             Frame::Focus { .. } => Some(KIND_FOCUS),
             _ => None,
@@ -252,6 +265,7 @@ fn known_kind(kind: &str) -> bool {
             | "ping"
             | "bye"
             | "notify"
+            | "dismiss"
             | "pasteboard"
             | "focus"
             | "focus_request"
@@ -301,6 +315,14 @@ mod tests {
             ),
             (Frame::Ping { seq: 3 }, None),
             (notification(), None),
+            (
+                Frame::Dismiss {
+                    id: 11,
+                    host: "donut.ts.net".into(),
+                    pane: "w1:p2".into(),
+                },
+                None,
+            ),
             (
                 Frame::Pasteboard {
                     id: 8,
@@ -443,5 +465,13 @@ mod tests {
         assert_eq!(frame.request_id(), Some(42));
         assert_eq!(frame.request_kind(), Some(KIND_NOTIFY));
         assert_eq!(Frame::Ping { seq: 1 }.request_id(), None);
+        let dismiss = Frame::Dismiss {
+            id: 0,
+            host: "donut".into(),
+            pane: "w1:p1".into(),
+        }
+        .with_request_id(5);
+        assert_eq!(dismiss.request_id(), Some(5));
+        assert_eq!(dismiss.request_kind(), Some(KIND_DISMISS));
     }
 }

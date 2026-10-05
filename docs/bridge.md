@@ -18,7 +18,7 @@ flowchart LR
         H["notify hook / pasteboard watcher"]
     end
     D -->|"one ssh -T per machine<br>exec herdr-cast bridge-relay"| R
-    R <-->|"Hello, Ping, Notify, Pasteboard, Ack, Bye frames"| D
+    R <-->|"Hello, Ping, Notify, Dismiss, Pasteboard, Ack, Bye frames"| D
     H -->|"connects to bridge.sock"| R
     D -->|"applies: notifier / pbcopy"| N
 ```
@@ -26,8 +26,9 @@ flowchart LR
 ## Sender path
 
 ```text
-notify::run (or forward::pasteboard watcher)
-  → bridge::send_notification / send_pasteboard        src/bridge/mod.rs
+notify::run (or forward::pasteboard watcher, or a pane focus/close clear)
+  → bridge::send_notification / send_pasteboard / send_dismiss
+                                                             src/bridge/mod.rs
     → socket connect to ~/.local/state/herdr-cast/bridge.sock
       - missing socket: silent fallback (normal on the host itself)
     → frame write: JSON header + body (16 KiB header / 1 MiB body caps)
@@ -47,7 +48,12 @@ bridge::host reconcile loop (TICK 3s)                 src/bridge/host.rs
       <target> 'exec herdr-cast bridge-relay'
   → Frame::Notify → notify::deliver_bridged            src/notify/bridged.rs
       - status bundle, PROJECT@HOST layout, group host:pane
+      - records an outstanding marker so a later Dismiss can remove it
       - click runs bridge-focus
+  → Frame::Dismiss → notify::dismiss_bridged
+      - removes the host:pane group from the status bundles, gated on the
+        outstanding marker; fired when the pane is focused or closed on the
+        remote (the notification was handled where the work is)
   → Frame::Pasteboard → /usr/bin/pbcopy (PBCOPY_TIMEOUT 3s)
   → Ack sent only after the side effect was applied
 ```
@@ -82,6 +88,7 @@ Frames are one JSON header line plus an optional raw body of `len` bytes
 | `Ping` | — | — |
 | `Bye` | `reason` | — |
 | `Notify` | `id`, `host`, `pane`, `status`, `action`, `workspace`, `project`, `socket`, `session` | — |
+| `Dismiss` | `id`, `host`, `pane` | — |
 | `Pasteboard` | `id`, `mime`, `len` | raw bytes (≤ 1 MiB) |
 | `Ack` | `id`, `ok`, `error` | — |
 | `Focus` | `id`, `socket`, `pane`, `session` | — |
