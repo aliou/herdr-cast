@@ -66,15 +66,13 @@ resent every 60 seconds, and sequenced by a monotonic counter.
 `src/title.rs` owns the foreground terminal window title, composed as
 `HOSTNAME › SESSION_NAME › terminal_title`:
 
-- the hostname fragment appears only when the server's inherited environment
-  carries `SSH_CONNECTION` or `SSH_TTY` (interactive ssh or `herdr
-  --remote`);
+- the hostname fragment appears on every machine except the user's own
+  (`LOCAL_HOST` in `src/title.rs`), so a remote tab always names its machine
+  even when its server was started outside ssh;
 - the session fragment appears only for named sessions;
 - the tail is the focused pane's `terminal_title_stripped`.
 
-Absent fragments drop out with their separators. A server started outside
-ssh and attached later keeps no hostname fragment, because that cannot be
-told apart from a local server.
+Absent fragments drop out with their separators.
 
 Because Herdr withholds `pane.updated` from plugin hooks, nothing announces
 a title change. A resident `herdr-cast daemon` per session polls `pane.list`

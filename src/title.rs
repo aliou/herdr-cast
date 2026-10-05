@@ -5,9 +5,10 @@
 //! explicit ownership for the whole session. The title becomes
 //! `HOSTNAME › SESSION_NAME › terminal_title`, where:
 //!
-//! - the hostname appears only when the server itself was spawned over SSH
-//!   (`SSH_CONNECTION`/`SSH_TTY` survive in the daemon's inherited
-//!   environment, covering both interactive ssh and `herdr --remote`),
+//! - the hostname appears on every machine except the one the user reads
+//!   tabs on (`LOCAL_HOST`): relying on `SSH_CONNECTION` in the server's
+//!   inherited environment missed servers started outside ssh, such as a
+//!   login item on a remote Mac, and those tabs lost their machine name,
 //! - the session name appears only for named sessions (`HERDR_SESSION`),
 //! - the tail is whatever the focused pane's program last set.
 //!
@@ -89,11 +90,16 @@ impl PaneEntry {
     }
 }
 
+/// The machine the user reads Ghostty tabs on. Its own sessions keep an
+/// unprefixed title; every other host names itself. Personal policy, like
+/// the constants in `notify` and `space`.
+const LOCAL_HOST: &str = "cleo";
+
 /// The session-fixed fragments of the title, resolved once from the
 /// server-inherited environment.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct TitleContext {
-    /// Short host name, present only when the server is remote.
+    /// Short host name, absent on the user's own machine.
     host: Option<String>,
     /// Named session, absent for the default session.
     session: Option<String>,
@@ -102,13 +108,18 @@ pub struct TitleContext {
 impl TitleContext {
     pub fn from_environment() -> Self {
         Self {
-            host: is_remote()
-                .then(daemon::hostname)
-                .flatten()
-                .and_then(|host| daemon::short_host(&host)),
+            host: host_fragment(daemon::hostname()),
             session: non_empty(std::env::var("HERDR_SESSION").ok()),
         }
     }
+}
+
+/// The title's machine fragment: the short host name, dropped on the
+/// user's own machine.
+fn host_fragment(hostname: Option<String>) -> Option<String> {
+    hostname
+        .and_then(|host| daemon::short_host(&host))
+        .filter(|host| !host.eq_ignore_ascii_case(LOCAL_HOST))
 }
 
 /// Join the session fragments with the focused pane's terminal title,
@@ -257,15 +268,6 @@ fn socket_path() -> Result<String, String> {
     std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())
 }
 
-/// The server is remote when the daemon inherited an SSH-spawned
-/// environment. A server first started outside ssh and later attached to
-/// cannot be told apart; it keeps no hostname fragment.
-fn is_remote() -> bool {
-    std::env::var_os("SSH_CONNECTION")
-        .or_else(|| std::env::var_os("SSH_TTY"))
-        .is_some()
-}
-
 fn non_empty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
@@ -295,6 +297,22 @@ mod tests {
             host: host.map(str::to_string),
             session: session.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn every_host_but_the_users_own_names_itself() {
+        assert_eq!(
+            host_fragment(Some("donut.ts.net".into())).as_deref(),
+            Some("donut")
+        );
+        assert_eq!(
+            host_fragment(Some("factorial".into())).as_deref(),
+            Some("factorial")
+        );
+        assert_eq!(host_fragment(Some("cleo".into())), None);
+        assert_eq!(host_fragment(Some("Cleo".into())), None);
+        assert_eq!(host_fragment(Some("cleo.local".into())), None);
+        assert_eq!(host_fragment(None), None);
     }
 
     #[test]
