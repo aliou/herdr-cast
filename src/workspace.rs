@@ -171,14 +171,15 @@ pub fn focus_existing() -> Result<(), String> {
     let panes = list_panes(&client)?;
     let state_dir = std::env::var_os("HERDR_PLUGIN_STATE_DIR").map(PathBuf::from);
     let recency = crate::recency::RecencyLog::new(state_dir.as_deref()).load();
+    let initial = initial_view(state_dir.as_deref(), &panes);
     let choices = picker_choices(workspaces, panes, &recency);
     let (target, view) = pick_with_detail(
         Picker {
             placeholder: "Search workspaces and panes",
             empty_message: "No matching workspaces or panes",
             order: Some(OrderToggle {
-                labels: &["spaces", "agents", "panes"],
-                initial: load_workspace_picker_view(state_dir.as_deref()),
+                labels: WORKSPACE_PICKER_VIEWS,
+                initial,
                 kind: ToggleKind::View,
             }),
         },
@@ -209,6 +210,21 @@ fn socket_client() -> Result<SocketClient, String> {
     let socket =
         std::env::var("HERDR_SOCKET_PATH").map_err(|_| "HERDR_SOCKET_PATH not set".to_string())?;
     Ok(SocketClient::with_timeout(socket, SOCKET_TIMEOUT))
+}
+
+/// The view the picker opens on. A persisted "agents" view falls back to
+/// "spaces" when no pane runs an agent: the empty agents view stays one Tab
+/// away, but resuming onto it would show an empty list.
+fn initial_view(state_dir: Option<&Path>, panes: &[PaneInfo]) -> usize {
+    let view = load_workspace_picker_view(state_dir);
+    let agents = WORKSPACE_PICKER_VIEWS
+        .iter()
+        .position(|view| *view == "agents")
+        .expect("view labels include agents");
+    if view == agents && !panes.iter().any(|pane| pane.agent_name().is_some()) {
+        return 0;
+    }
+    view
 }
 
 fn load_workspace_picker_view(state_dir: Option<&Path>) -> usize {
@@ -967,6 +983,34 @@ mod tests {
     fn workspace_picker_view_without_state_uses_the_primary_view() {
         save_workspace_picker_view(None, 2).unwrap();
         assert_eq!(load_workspace_picker_view(None), 0);
+    }
+
+    #[test]
+    fn a_persisted_agents_view_falls_back_to_spaces_without_agents() {
+        let dir = crate::test_support::TestDir::new();
+        let state_dir = Some(dir.path());
+        save_workspace_picker_view(state_dir, 1).unwrap();
+
+        let mut shell = pane("p:shell", "w:one", "a shell");
+        shell.display_agent = None;
+        shell.agent = None;
+        assert_eq!(
+            initial_view(state_dir, &[shell]),
+            0,
+            "an agents resume with no agent panes starts on spaces"
+        );
+
+        assert_eq!(
+            initial_view(state_dir, &[pane("p:agent", "w:one", "an agent")]),
+            1,
+            "agent panes keep the persisted agents view"
+        );
+        save_workspace_picker_view(state_dir, 2).unwrap();
+        assert_eq!(
+            initial_view(state_dir, &[]),
+            2,
+            "only the agents view falls back"
+        );
     }
 
     fn workspace(id: &str, label: &str) -> WorkspaceInfo {
