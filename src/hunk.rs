@@ -137,8 +137,8 @@ fn finalize_dump(notes: &Path) {
     if count == Some(0) {
         return;
     }
-    copy_path_to_clipboard(notes);
-    notify_notes_saved(notes, count);
+    let copied = copy_path_to_clipboard(notes);
+    notify_notes_saved(notes, count, copied);
 }
 
 /// Number of notes in a `hunk session comment list --json` dump, or None when
@@ -165,9 +165,15 @@ fn clipboard_invocations() -> &'static [&'static [&'static str]] {
     &[&["wl-copy"], &["xclip", "-selection", "clipboard"]]
 }
 
-/// Copy the path through the first available clipboard program. The path
-/// travels over stdin, so spaces and shell metacharacters need no quoting.
+/// Copy the path through the bridge first, so a review on a remote lands on
+/// the host Mac's pasteboard; fall back to the first available local
+/// clipboard program, then to OSC 52 into the pane. The path travels over
+/// stdin, so spaces and shell metacharacters need no quoting.
 fn copy_path_to_clipboard(path: &Path) -> bool {
+    let text = path.to_string_lossy().into_owned();
+    if crate::bridge::send_pasteboard(&text).is_ok() {
+        return true;
+    }
     for invocation in clipboard_invocations() {
         let Ok(mut child) = Command::new(invocation[0])
             .args(&invocation[1..])
@@ -183,7 +189,7 @@ fn copy_path_to_clipboard(path: &Path) -> bool {
         let written = child
             .stdin
             .take()
-            .and_then(|mut stdin| stdin.write_all(path.to_string_lossy().as_bytes()).ok());
+            .and_then(|mut stdin| stdin.write_all(text.as_bytes()).ok());
         let succeeded = match written {
             Some(()) => child.wait().map(|status| status.success()).unwrap_or(false),
             None => {
@@ -196,7 +202,34 @@ fn copy_path_to_clipboard(path: &Path) -> bool {
         }
         let _ = child.kill();
     }
-    false
+    inject_osc52(&text)
+}
+
+/// Herdr forwards OSC 52 through its client protocol; keep pane copies well
+/// under what that path carries, mirroring the pasteboard watcher.
+const OSC52_MAX_BYTES: usize = 192 * 1024;
+
+/// Last resort on a remote with no bridge and no clipboard program: emit
+/// OSC 52 into the pane's own terminal. Herdr parses pane output for OSC 52
+/// and forwards the copy to its foreground client.
+fn inject_osc52(text: &str) -> bool {
+    let Some(sequence) = osc52_sequence(text) else {
+        return false;
+    };
+    fs::OpenOptions::new()
+        .write(true)
+        .open("/dev/tty")
+        .and_then(|mut tty| tty.write_all(&sequence))
+        .is_ok()
+}
+
+fn osc52_sequence(text: &str) -> Option<Vec<u8>> {
+    if text.len() > OSC52_MAX_BYTES {
+        return None;
+    }
+    use base64::Engine;
+    let data = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
+    Some(format!("\x1b]52;c;{data}\x07").into_bytes())
 }
 
 #[derive(Serialize)]
@@ -209,23 +242,23 @@ struct NotesSavedParams {
 
 /// Ask Herdr to toast that the review notes were dumped. Sound stays "none":
 /// the plugin keeps every sound out of Herdr socket requests.
-fn notify_notes_saved(notes: &Path, count: Option<usize>) {
+fn notify_notes_saved(notes: &Path, count: Option<usize>, copied: bool) {
     let Some(socket_path) =
         std::env::var_os("HERDR_SOCKET_PATH").map(|value| value.to_string_lossy().into_owned())
     else {
         return;
     };
-    let body = match count {
-        Some(1) => format!(
-            "1 note saved; path copied to clipboard: {}",
-            notes.display()
-        ),
-        Some(count) => format!(
-            "{count} notes saved; path copied to clipboard: {}",
-            notes.display()
-        ),
-        None => format!("notes saved; path copied to clipboard: {}", notes.display()),
+    let saved = match count {
+        Some(1) => "1 note saved".to_string(),
+        Some(count) => format!("{count} notes saved"),
+        None => "notes saved".to_string(),
     };
+    let detail = if copied {
+        format!("path copied to clipboard: {}", notes.display())
+    } else {
+        format!("clipboard copy failed; notes at: {}", notes.display())
+    };
+    let body = format!("{saved}; {detail}");
     let client = SocketClient::new(socket_path);
     let _ = client.send(
         "cast:hunk-notes-saved",
@@ -322,5 +355,58 @@ mod tests {
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.starts_with("hunk-review-notes-")));
         fs::remove_dir_all(&state).ok();
+    }
+
+    /// A live bridge must win over local clipboard programs: remotes have no
+    /// clipboard of their own, the host Mac does.
+    #[test]
+    fn clipboard_copy_prefers_the_bridge() {
+        use std::io::{BufRead, BufReader, Read};
+        use std::os::unix::net::UnixListener;
+
+        let home =
+            std::env::temp_dir().join(format!("herdr-cast-hunk-home-{}", std::process::id()));
+        let socket_dir = home.join(".local/state/herdr-cast");
+        fs::create_dir_all(&socket_dir).unwrap();
+        let listener = UnixListener::bind(socket_dir.join("bridge.sock")).unwrap();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(&stream);
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            let len = serde_json::from_str::<serde_json::Value>(&header).unwrap()["len"]
+                .as_u64()
+                .unwrap() as usize;
+            let mut body = vec![0; len];
+            reader.read_exact(&mut body).unwrap();
+            let mut writer = &stream;
+            writer
+                .write_all(b"{\"kind\":\"ack\",\"id\":0,\"ok\":true}\n")
+                .unwrap();
+            String::from_utf8(body).unwrap()
+        });
+
+        let previous = std::env::var_os("HOME");
+        std::env::set_var("HOME", &home);
+        let copied = copy_path_to_clipboard(Path::new("/tmp/hunk review notes.json"));
+        match previous {
+            Some(value) => std::env::set_var("HOME", value),
+            None => std::env::remove_var("HOME"),
+        }
+
+        assert!(copied);
+        assert_eq!(server.join().unwrap(), "/tmp/hunk review notes.json");
+        fs::remove_dir_all(&home).ok();
+    }
+
+    #[test]
+    fn osc52_sequence_wraps_the_text_and_caps_the_size() {
+        use base64::Engine;
+        let data = base64::engine::general_purpose::STANDARD.encode("/tmp/a b.json");
+        assert_eq!(
+            osc52_sequence("/tmp/a b.json").unwrap(),
+            format!("\x1b]52;c;{data}\x07").into_bytes()
+        );
+        assert!(osc52_sequence(&"x".repeat(OSC52_MAX_BYTES + 1)).is_none());
     }
 }

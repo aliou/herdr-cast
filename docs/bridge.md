@@ -26,7 +26,8 @@ flowchart LR
 ## Sender path
 
 ```text
-notify::run (or forward::pasteboard watcher, or a pane focus/close clear)
+notify::run (or the forward::pasteboard watcher, the hunk dump finalizer,
+or a pane focus/close clear)
   → bridge::send_notification / send_pasteboard / send_dismiss
                                                              src/bridge/mod.rs
     → socket connect to ~/.local/state/herdr-cast/bridge.sock

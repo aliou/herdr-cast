@@ -1,7 +1,8 @@
 //! Always-on bridge from remote Herdr machines to the host Mac running the
 //! Herdr client. The host dials each attached remote over ssh and runs
 //! `herdr-cast bridge-relay` there; the relay owns a Unix socket that local
-//! senders (the notify hook, the pasteboard watcher) write to. Without that
+//! senders (the notify hook, the pasteboard watcher, the hunk dump
+//! finalizer) write to. Without that
 //! socket, senders fall back to their pre-bridge paths.
 //!
 //! ```text

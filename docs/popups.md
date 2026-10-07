@@ -129,4 +129,8 @@ loaded with `--extension`) dumps the review's notes (`hunk session comment
 list --json` output) to a temp file on every change and at hunk's shutdown.
 When hunk exits, the dump path is copied to the clipboard (best-effort) and
 Herdr toasts about it through `notification.show` with `sound = "none"`.
+The copy goes through the bridge first, so reviews on a remote land on the
+host Mac's pasteboard; the fallbacks are local clipboard programs
+(`pbcopy`, `wl-copy`, `xclip`) and finally OSC 52 into the pane, which
+Herdr forwards to the attached client. The toast says when the copy failed.
 With no notes, neither happens.
