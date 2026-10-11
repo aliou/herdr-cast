@@ -364,8 +364,8 @@ mod tests {
         use std::io::{BufRead, BufReader, Read};
         use std::os::unix::net::UnixListener;
 
-        let home =
-            std::env::temp_dir().join(format!("herdr-cast-hunk-home-{}", std::process::id()));
+        // Keep the socket path under SUN_LEN (104 on macOS).
+        let home = PathBuf::from(format!("/tmp/herdr-cast-hunk-home-{}", std::process::id()));
         let socket_dir = home.join(".local/state/herdr-cast");
         fs::create_dir_all(&socket_dir).unwrap();
         let listener = UnixListener::bind(socket_dir.join("bridge.sock")).unwrap();
