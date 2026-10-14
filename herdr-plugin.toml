@@ -39,6 +39,26 @@ command = ["herdr-cast", "bridge-start"]
 on = "pane.agent_status_changed"
 command = ["herdr-cast", "notify"]
 
+# Open a clicked web URL. Runs where the session lives: a link click in a
+# remote session crosses the bridge and opens in the host client's browser;
+# without a bridge, it falls back to this machine's default browser.
+[[actions]]
+id = "open-url"
+title = "Open URL"
+description = "Open a clicked web URL, bridged to the host client when possible."
+command = ["herdr-cast", "bridge-open-url"]
+
+# Route web link clicks (OSC 8 links and visible URLs) to the action above
+# instead of Herdr's default browser open on the session machine. `pattern`
+# is a Rust regex matched against the full clicked URL. Requires Herdr
+# 0.9.4+; on older versions the section is ignored and clicks stay with the
+# built-in opener.
+[[link_handlers]]
+id = "open-url"
+title = "Open on host"
+pattern = "^https?://"
+action = "open-url"
+
 # Label a Space as soon as it exists.
 [[events]]
 on = "workspace.created"

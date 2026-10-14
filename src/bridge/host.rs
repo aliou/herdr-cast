@@ -2,7 +2,8 @@
 //! is shared by every session), tied to the Herdr server whose hook spawned
 //! it. Every few seconds it lists the running `herdr --remote` clients and
 //! keeps one ssh link per remote machine, running `herdr-cast bridge-relay`
-//! on the far end. A control socket in the state directory lets a
+//! on the far end. Bridged notifications, pasteboard copies, and link-click
+//! URLs apply on this Mac. A control socket in the state directory lets a
 //! notification click ask for a remote pane to be focused over the link.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -39,6 +40,8 @@ const EXIT_GRACE: Duration = Duration::from_secs(2);
 const EXIT_AFTER_FAILED_PINGS: u32 = 10;
 const SOCKET_TIMEOUT: Duration = Duration::from_millis(500);
 const PBCOPY_TIMEOUT: Duration = Duration::from_secs(3);
+/// Stay at 3s so an opener never outlives the relay's ack wait (4s).
+const OPENER_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long a click waits for the daemon: the relay's focus ack plus slack.
 const CONTROL_TIMEOUT: Duration = Duration::from_secs(6);
 /// How often the notifier registration is re-checked, well inside its TTL.
@@ -391,6 +394,7 @@ fn apply(
             set_pasteboard(body.unwrap_or_default())
         }
         Frame::Pasteboard { mime, .. } => Err(format!("unsupported pasteboard type {mime}")),
+        Frame::OpenUrl { url, .. } => open_url(url),
         _ => Err("not a request".to_string()),
     }
 }
@@ -420,6 +424,25 @@ fn set_pasteboard(body: Vec<u8>) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("pbcopy failed with {status}"))
+    }
+}
+
+/// Open a bridged link click in the host Mac's default browser. `open`
+/// detaches, so a success status means Launch Services accepted the URL.
+fn open_url(url: &str) -> Result<(), String> {
+    let mut child = Command::new("/usr/bin/open")
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start open: {error}"))?;
+    let status = crate::notify::wait_with_timeout(&mut child, OPENER_TIMEOUT)
+        .ok_or_else(|| format!("open did not exit within {OPENER_TIMEOUT:?}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("open failed with {status}"))
     }
 }
 

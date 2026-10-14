@@ -78,7 +78,7 @@ never leave it pointing at the checkout.
 
 ## Architecture
 
-One Rust binary dispatched in `src/main.rs` (24 subcommands), declared in
+One Rust binary dispatched in `src/main.rs` (25 subcommands), declared in
 `herdr-plugin.toml` (startup hooks, event subscriptions, pane entrypoints).
 Runtime artifacts live only in the injected `HERDR_PLUGIN_STATE_DIR`, except the
 remote bridge socket at `~/.local/state/herdr-cast/bridge.sock`.
@@ -157,9 +157,9 @@ work in `.agents/plans/`.
 - Keep notification text glyph-free, sound out of Herdr socket requests
   (`sound = "none"`), and status visual (bundle icon) and audible.
 - Senders try the bridge first and keep every pre-bridge path as the
-  fallback. Keep bridge timeouts ordered: notifier/pbcopy 3 s < relay ack 4 s
-  < sender 5 s; check the 1 MiB body cap before connecting and before
-  allocating.
+  fallback. Keep bridge timeouts ordered: notifier/pbcopy/URL opener 3 s
+  < relay ack 4 s < sender 5 s; check the 1 MiB body cap before connecting
+  and before allocating.
 - Only the host daemon starts ssh (`BatchMode=yes`, `ControlPath=none`);
   targets come from running `herdr --remote` processes, never a stored list.
   Only `bridge-relay` creates or removes the remote bridge socket. Run

@@ -15,6 +15,7 @@ pub const MAX_BODY: usize = 1024 * 1024;
 pub const KIND_NOTIFY: &str = "notify";
 pub const KIND_DISMISS: &str = "dismiss";
 pub const KIND_PASTEBOARD: &str = "pasteboard";
+pub const KIND_OPEN_URL: &str = "open_url";
 pub const KIND_FOCUS: &str = "focus";
 pub const TEXT_MIME: &str = "text/plain;charset=utf-8";
 
@@ -49,6 +50,11 @@ pub enum Frame {
         id: u64,
         mime: String,
         len: usize,
+    },
+    /// Open `url` in the host's default browser.
+    OpenUrl {
+        id: u64,
+        url: String,
     },
     /// Host to relay: focus `pane` on the Herdr server behind `socket`.
     Focus {
@@ -105,9 +111,10 @@ impl Frame {
     pub fn request_id(&self) -> Option<u64> {
         match self {
             Frame::Notify(notification) => Some(notification.id),
-            Frame::Dismiss { id, .. } | Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => {
-                Some(*id)
-            }
+            Frame::Dismiss { id, .. }
+            | Frame::Pasteboard { id, .. }
+            | Frame::OpenUrl { id, .. }
+            | Frame::Focus { id, .. } => Some(*id),
             _ => None,
         }
     }
@@ -116,9 +123,10 @@ impl Frame {
     pub fn with_request_id(mut self, new_id: u64) -> Self {
         match &mut self {
             Frame::Notify(notification) => notification.id = new_id,
-            Frame::Dismiss { id, .. } | Frame::Pasteboard { id, .. } | Frame::Focus { id, .. } => {
-                *id = new_id
-            }
+            Frame::Dismiss { id, .. }
+            | Frame::Pasteboard { id, .. }
+            | Frame::OpenUrl { id, .. }
+            | Frame::Focus { id, .. } => *id = new_id,
             _ => {}
         }
         self
@@ -130,6 +138,7 @@ impl Frame {
             Frame::Notify(_) => Some(KIND_NOTIFY),
             Frame::Dismiss { .. } => Some(KIND_DISMISS),
             Frame::Pasteboard { .. } => Some(KIND_PASTEBOARD),
+            Frame::OpenUrl { .. } => Some(KIND_OPEN_URL),
             Frame::Focus { .. } => Some(KIND_FOCUS),
             _ => None,
         }
@@ -267,6 +276,7 @@ fn known_kind(kind: &str) -> bool {
             | "notify"
             | "dismiss"
             | "pasteboard"
+            | "open_url"
             | "focus"
             | "focus_request"
             | "focus_reply"
@@ -330,6 +340,13 @@ mod tests {
                     len: text.len(),
                 },
                 Some(text),
+            ),
+            (
+                Frame::OpenUrl {
+                    id: 6,
+                    url: "https://example.com/é漢".into(),
+                },
+                None,
             ),
             (Frame::ack(8, Err("boom".into())), None),
             (
@@ -473,5 +490,12 @@ mod tests {
         .with_request_id(5);
         assert_eq!(dismiss.request_id(), Some(5));
         assert_eq!(dismiss.request_kind(), Some(KIND_DISMISS));
+        let open = Frame::OpenUrl {
+            id: 0,
+            url: "https://example.com".into(),
+        }
+        .with_request_id(9);
+        assert_eq!(open.request_id(), Some(9));
+        assert_eq!(open.request_kind(), Some(KIND_OPEN_URL));
     }
 }

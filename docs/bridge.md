@@ -1,8 +1,8 @@
 # The bridge
 
-The bridge carries notifications and pasteboard copies from machines where
-Herdr runs remotely (macOS or Linux) to the Mac running the Herdr client the
-user looks at (the host). It uses its own protocol over plain ssh, not
+The bridge carries notifications, pasteboard copies, and link clicks from
+machines where Herdr runs remotely (macOS or Linux) to the Mac running the
+Herdr client the user looks at (the host). It uses its own protocol over plain ssh, not
 Herdr's. A remote keeps its fallback behavior when the bridge is absent,
 unreachable, or slow, so the bridge only ever adds a delivery path.
 
@@ -18,25 +18,25 @@ flowchart LR
         H["notify hook / pasteboard watcher"]
     end
     D -->|"one ssh -T per machine<br>exec herdr-cast bridge-relay"| R
-    R <-->|"Hello, Ping, Notify, Dismiss, Pasteboard, Ack, Bye frames"| D
+    R <-->|"Hello, Ping, Notify, Dismiss, Pasteboard, OpenUrl, Ack, Bye frames"| D
     H -->|"connects to bridge.sock"| R
-    D -->|"applies: notifier / pbcopy"| N
+    D -->|"applies: notifier / pbcopy / open"| N
 ```
 
 ## Sender path
 
 ```text
 notify::run (or the forward::pasteboard watcher, the hunk dump finalizer,
-or a pane focus/close clear)
-  → bridge::send_notification / send_pasteboard / send_dismiss
-                                                             src/bridge/mod.rs
+bridge-open-url for link clicks, or a pane focus/close clear)
+  → bridge::send_notification / send_pasteboard / send_dismiss /
+    send_open_url                                        src/bridge/mod.rs
     → socket connect to ~/.local/state/herdr-cast/bridge.sock
       - missing socket: silent fallback (normal on the host itself)
     → frame write: JSON header + body (16 KiB header / 1 MiB body caps)
     → wait for Ack: the relay gives up on the host's ack after ACK_TIMEOUT
       (4s); the sender waits SEND_TIMEOUT (5s) in total
   → on failure: log and fall back (notification.show, then local notifier;
-    or OSC 52 for pasteboard)
+    OSC 52 for pasteboard; the local browser for a link click)
 ```
 
 ## Host delivery path
@@ -56,6 +56,7 @@ bridge::host reconcile loop (TICK 3s)                 src/bridge/host.rs
         outstanding marker; fired when the pane is focused or closed on the
         remote (the notification was handled where the work is)
   → Frame::Pasteboard → /usr/bin/pbcopy (PBCOPY_TIMEOUT 3s)
+  → Frame::OpenUrl → /usr/bin/open (OPENER_TIMEOUT 3s)
   → Ack sent only after the side effect was applied
 ```
 
@@ -78,6 +79,25 @@ The AppleScript runs only inside the click process, which executes within
 the HerdrNotify bundle that holds the Automation grant. The bridge daemon
 never drives Ghostty.
 
+## Link-click path
+
+```text
+cmd/ctrl-click on a pane URL
+  → Herdr's `[[link_handlers]]` (herdr-plugin.toml, needs Herdr 0.9.4):
+    any `https?://` match runs the `open-url` action on the machine the
+    session lives on; older Herdr ignores the section and keeps its own
+    opener
+  → herdr-cast bridge-open-url with HERDR_PLUGIN_CLICKED_URL (an explicit
+    argument wins, for testing)
+    → scheme/whitespace validation, then send_open_url over the bridge
+  → Fallback (no bridge socket — always the case on the host itself — or a
+    failed send): open / xdg-open locally
+```
+
+So a click in a remote session opens in the host Mac's browser, and a
+click in a local session opens locally, with one code path: the handler
+fires where the session lives and only forwarding differs.
+
 ## Wire
 
 Frames are one JSON header line plus an optional raw body of `len` bytes
@@ -91,6 +111,7 @@ Frames are one JSON header line plus an optional raw body of `len` bytes
 | `Notify` | `id`, `host`, `pane`, `status`, `action`, `workspace`, `project`, `socket`, `session` | — |
 | `Dismiss` | `id`, `host`, `pane` | — |
 | `Pasteboard` | `id`, `mime`, `len` | raw bytes (≤ 1 MiB) |
+| `OpenUrl` | `id`, `url` | — |
 | `Ack` | `id`, `ok`, `error` | — |
 | `Focus` | `id`, `socket`, `pane`, `session` | — |
 
@@ -120,7 +141,7 @@ readers check before allocating.
 Ordered so a slow component reads as its own failure:
 
 ```text
-notifier / pbcopy child (3s) < relay ack wait (4s) < sender wait (5s)
+notifier / pbcopy / URL opener child (3s) < relay ack wait (4s) < sender wait (5s)
 ```
 
 ## Sockets and state
@@ -149,6 +170,7 @@ notifier / pbcopy child (3s) < relay ack wait (4s) < sender wait (5s)
 ```bash
 herdr-cast bridge-send [--socket PATH] notify --status done --action 'pi done'
 herdr-cast bridge-send [--socket PATH] pasteboard < file
+herdr-cast bridge-open-url 'https://example.com'   # bridged, else local
 ```
 
 Prints `ok` or the reason the send failed. Linux builds keep the relay and

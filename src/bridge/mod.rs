@@ -2,8 +2,12 @@
 //! Herdr client. The host dials each attached remote over ssh and runs
 //! `herdr-cast bridge-relay` there; the relay owns a Unix socket that local
 //! senders (the notify hook, the pasteboard watcher, the hunk dump
-//! finalizer) write to. Without that
+//! finalizer, the link-click opener) write to. Without that
 //! socket, senders fall back to their pre-bridge paths.
+//!
+//! Nothing owns the sender socket on the host Mac itself, so link clicks in
+//! local sessions fall back to opening locally, matching the pre-bridge
+//! behavior.
 //!
 //! ```text
 //! host Mac                                remote machine
@@ -12,6 +16,7 @@
 
 use std::io::Read;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 mod host;
@@ -26,7 +31,8 @@ pub use send::Unavailable;
 use wire::Frame;
 
 /// Ordered so an inner timeout never looks like an outer failure: the
-/// notifier child (3s, in `notify`) < relay ack wait < sender wait.
+/// notifier child, pbcopy, and the URL opener (3s each) < relay ack wait
+/// < sender wait.
 const ACK_TIMEOUT: Duration = Duration::from_secs(4);
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const HELLO_TIMEOUT: Duration = Duration::from_secs(5);
@@ -67,6 +73,19 @@ pub fn send_dismiss(host: &str, pane: &str) -> Result<(), Unavailable> {
     )
 }
 
+/// Open `url` on the bridged host client. The URL rides in the header.
+pub fn send_open_url(url: &str) -> Result<(), Unavailable> {
+    let socket = socket_path().ok_or(Unavailable::NoSocket)?;
+    send::send(
+        &socket,
+        &Frame::OpenUrl {
+            id: 0,
+            url: url.to_string(),
+        },
+        None,
+    )
+}
+
 /// Only the macOS pasteboard watcher sends pasteboard copies.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub fn send_pasteboard(text: &str) -> Result<(), Unavailable> {
@@ -83,6 +102,66 @@ fn pasteboard_frame(len: usize) -> Frame {
         id: 0,
         mime: wire::TEXT_MIME.to_string(),
         len,
+    }
+}
+
+/// `bridge-open-url [url]`: Herdr's link-click hook passes the URL in
+/// `HERDR_PLUGIN_CLICKED_URL`; an explicit argument wins, for testing. Opens
+/// on the bridged host client when a bridge answers, else locally (the path
+/// local sessions take, since the host Mac has no sender socket).
+pub fn open_command(arguments: Vec<String>) -> Result<(), String> {
+    const USAGE: &str = "usage: herdr-cast bridge-open-url [url]";
+    let url = match arguments.as_slice() {
+        [] => std::env::var("HERDR_PLUGIN_CLICKED_URL")
+            .map_err(|_| "HERDR_PLUGIN_CLICKED_URL not set".to_string())?,
+        [url] => url.clone(),
+        _ => return Err(USAGE.to_string()),
+    };
+    validate_url(&url)?;
+    let Err(unavailable) = send_open_url(&url) else {
+        return Ok(());
+    };
+    eprintln!("bridge-open-url: {unavailable}; opening locally");
+    open_locally(&url)
+}
+
+/// Only web URLs cross the bridge: the Herdr link handler pattern restricts
+/// to `https?://`, and anything else falls out of the fail-open contract.
+fn validate_url(url: &str) -> Result<(), String> {
+    if url.chars().any(|c| c.is_whitespace() || c.is_control()) {
+        return Err("url contains whitespace or control characters".to_string());
+    }
+    let lower = url.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        Ok(())
+    } else {
+        Err(format!("only web URLs open over the bridge: {url:?}"))
+    }
+}
+
+/// No bridge answered: open with this machine's opener, matching the
+/// pre-bridge behavior. `open` and `xdg-open` both detach, so a short wait
+/// only catches hard failures.
+fn open_locally(url: &str) -> Result<(), String> {
+    const OPENER_TIMEOUT: Duration = Duration::from_secs(3);
+    let opener = if cfg!(target_os = "macos") {
+        "/usr/bin/open"
+    } else {
+        "xdg-open"
+    };
+    let mut child = Command::new(opener)
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start {opener}: {error}"))?;
+    let status = crate::notify::wait_with_timeout(&mut child, OPENER_TIMEOUT)
+        .ok_or_else(|| format!("{opener} did not exit within {OPENER_TIMEOUT:?}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{opener} failed with {status}"))
     }
 }
 
@@ -376,6 +455,15 @@ mod tests {
         let text: Vec<u8> = "é漢\n".repeat(100_000).into_bytes();
         assert!(text.len() > 192 * 1024);
         send::send(&socket, &pasteboard_frame(text.len()), Some(&text)).unwrap();
+        send::send(
+            &socket,
+            &Frame::OpenUrl {
+                id: 0,
+                url: "https://example.com/x".into(),
+            },
+            None,
+        )
+        .unwrap();
         let rejected = send::send(&socket, &pasteboard_frame(9), Some(b"reject me"));
         assert!(
             matches!(&rejected, Err(Unavailable::Rejected(error)) if error == "boom"),
@@ -384,7 +472,7 @@ mod tests {
 
         {
             let applied = harness.applied.lock().unwrap();
-            assert_eq!(applied.len(), 3);
+            assert_eq!(applied.len(), 4);
             let Frame::Notify(received) = &applied[0].0 else {
                 panic!("expected a notification");
             };
@@ -400,6 +488,13 @@ mod tests {
                 "the relay rewrites request ids in order"
             );
             assert_eq!(applied[2].1.as_deref(), Some(text.as_slice()));
+            assert_eq!(
+                applied[3].0,
+                Frame::OpenUrl {
+                    id: 4,
+                    url: "https://example.com/x".into(),
+                },
+            );
         }
 
         harness.stop.store(true, Ordering::SeqCst);

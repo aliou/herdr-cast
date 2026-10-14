@@ -38,6 +38,7 @@ fn main() {
         Some("bridge-relay") => bridge::relay_command(arguments.collect()),
         Some("bridge-send") => bridge::send_command(arguments.collect()),
         Some("bridge-focus") => bridge::focus_command(arguments.collect()),
+        Some("bridge-open-url") => bridge::open_command(arguments.collect()),
         Some("palette") if arguments.next().is_none() => palette::run(),
         Some("directory-workspace") if arguments.next().is_none() => {
             workspace::create_from_directory()
@@ -72,7 +73,7 @@ fn main() {
         }
         _ => Err(concat!(
             "usage: herdr-cast <pane-focused|clear-notification|notify|forward-notify|daemon|forward-start|forward-daemon",
-            "|bridge-start|bridge|bridge-relay|bridge-send|bridge-focus|palette|directory-workspace",
+            "|bridge-start|bridge|bridge-relay|bridge-send|bridge-focus|bridge-open-url|palette|directory-workspace",
             "|workspace-picker|lazygit|hunk|hunk-log|sync-space|sync-title|sync-spaces|shell-init|open-popup|focus>"
         )
         .to_string()),
@@ -220,6 +221,7 @@ mod tests {
         assert!(!holds_popup_error("bridge-relay"));
         assert!(!holds_popup_error("bridge-send"));
         assert!(!holds_popup_error("bridge-focus"));
+        assert!(!holds_popup_error("bridge-open-url"));
         assert!(!holds_popup_error(""));
     }
 
