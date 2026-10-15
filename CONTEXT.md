@@ -35,8 +35,11 @@ misunderstanding.
   remote connect to that socket.
 - **Tunnel** — the host-side session for one link (`src/bridge/tunnel.rs`):
   spawn, hello handshake, pings, backoff, and takeover parking.
-- **Sender** — code on the remote that tries the bridge first (the notify
-  hook, the pasteboard watcher) and falls back to non-bridge paths.
+- **Sender** — code on the remote that tries the bridge first and falls
+  back to non-bridge paths: plugin code (the notify hook, the pasteboard
+  watcher) and external programs using `bridge-send notify`. External
+  senders own their fallback; the bridge socket exists only while a host
+  is connected.
 - **Frame** — one wire message: a JSON header line plus an optional raw
   body. `Hello`, `Ping`, `Bye`, `Notify`, `Dismiss`, `Pasteboard`, `Ack`,
   `Focus`.

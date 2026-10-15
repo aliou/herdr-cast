@@ -99,6 +99,50 @@ Bridged delivery records the same outstanding marker on the host, so the
 `Dismiss` frame removes only what was actually delivered and a pane that
 never notified costs no notifier spawn.
 
+## Other senders
+
+Any program on a remote machine can post a clickable notification through
+the bridge with `bridge-send notify` (see docs/bridge.md for the socket
+and timeouts). Use it when the click should focus a pane:
+`notification.show` renders through the attached client, and its click
+only activates the client — it cannot target a pane.
+
+```bash
+herdr-cast bridge-send notify \
+  --status blocked \
+  --action "deploy: waiting for approval" \
+  --workspace ops \
+  --project factorial \
+  --pane w1:p9 \
+  --herdr-socket "$HERDR_SOCKET_PATH" \
+  --session ops
+```
+
+- `--status` and `--action` are required. `blocked` or `done` picks the
+  identity bundle (icon) and sound; any other value renders the neutral
+  bundle with no status sound. The action is the subtitle text.
+- `--pane` is what the click focuses: the host sends a Focus frame down
+  the link and the relay runs `agent.focus` on the Herdr socket with this
+  value as the target, so a pane id — or a live agent's name — resolves.
+  It is also the group a later Dismiss removes: when the plugin clears
+  that pane on this machine (pane focused or closed, above), this
+  notification goes with it. Pass the pane id, not an agent name, for
+  that match. Without the flag the pane is the literal `bridge-send`, so
+  the click focuses nothing.
+- `--herdr-socket` is the Herdr socket the relay calls on click; focus
+  needs it. Without it the click can only raise Ghostty.
+- `--session` names the session whose Ghostty tab the click raises;
+  empty means the remote's default session.
+- `--workspace` and `--project` shape the layout: title `PROJECT@HOST`
+  (HOST is the sending machine), subtitle the action, extended with
+  `· WORKSPACE` unless that repeats the title.
+
+The command prints `ok` after the host applied the notification, and the
+reason (exit 1) otherwise. No relay socket fails with `no bridge socket`
+— the normal case on the host itself — so a sender that also runs
+locally keeps its own fallback (for example `herdr notification show`)
+and tries the bridge first.
+
 ## Identity bundles
 
 macOS draws a notification's icon from the sender bundle's registered icon

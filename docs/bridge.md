@@ -168,10 +168,14 @@ notifier / pbcopy / URL opener child (3s) < relay ack wait (4s) < sender wait (5
 ## Diagnostics
 
 ```bash
-herdr-cast bridge-send [--socket PATH] notify --status done --action 'pi done'
+herdr-cast bridge-send [--socket PATH] notify --status done --action 'pi done' \
+  --pane "$HERDR_PANE_ID" --herdr-socket "$HERDR_SOCKET_PATH"
 herdr-cast bridge-send [--socket PATH] pasteboard < file
 herdr-cast bridge-open-url 'https://example.com'   # bridged, else local
 ```
 
-Prints `ok` or the reason the send failed. Linux builds keep the relay and
-sender; the host daemon and pbcopy delivery are macOS-only.
+Prints `ok` or the reason the send failed. `--pane` and `--herdr-socket`
+make the notification's click focus the pane; that is not just a
+diagnostic — other programs send clickable notifications the same way
+(see "Other senders" in docs/notifications.md). Linux builds keep the
+relay and sender; the host daemon and pbcopy delivery are macOS-only.
