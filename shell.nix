@@ -1,20 +1,11 @@
 # Dev shell for herdr-cast.
 #
-# Provides the Rust toolchain used by the checks in AGENTS.md:
-#   cargo fmt -- --check
-#   cargo test
-#   cargo build --release
+# The Rust toolchain comes from the global home-manager profile. This shell
+# only exists to enter the project and let direnv/nix-shell set up.
 #
 # Enter with: nix-shell
 { pkgs ? import <nixpkgs> { } }:
 
 pkgs.mkShell {
-  packages = with pkgs; [
-    cargo
-    rustc
-    rustfmt
-    clippy
-  ];
-
   RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
 }
