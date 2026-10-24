@@ -1,25 +1,19 @@
-// The multi-step "move pane" wizard behind the layout palette's
-// "Move pane…" action. Every level is a plain picker; the wizard keeps an
-// explicit stack of levels so Escape pops back to the parent level and
-// Ctrl-C aborts the whole wizard from any depth. Each terminal choice maps
-// to exactly one `pane.move` request. The protocol requires a split
-// direction when moving into an existing tab, so that always gets its own
-// final level.
+// The "Move pane to workspace or tab…" submenu behind the layout palette's
+// root entry, plus the cross-session transplant machinery the palette root
+// dispatches to. The submenu is one picker level: a fuzzy workspace → tab
+// tree where every row executes exactly one `pane.move`. Workspace rows
+// move the pane into a new tab of that workspace; tab rows move it into that
+// tab with the default split (right). Escape clears the query, then returns
+// to the palette's root action list; Ctrl-C aborts outright.
 //
-// Levels:
+// The palette root owns the other move destinations (new tab here, new
+// workspace, cross-session transplants); this module owns the tree submenu,
+// the session picker, and the transplants themselves.
 //
-//   DestinationKind ──► NewTab (current workspace)          → pane.move
-//                   ├──► ChooseTab ──► workspace row        → pane.move new_tab
-//                   │              └──► tab row ──► ChooseSplit → pane.move tab
-//                   └──► NewWorkspace                       → pane.move
-//
-// Picking a workspace row in ChooseTab means "new tab in that workspace",
-// so "new tab elsewhere" and "existing tab" share one fuzzy tree.
-//
-// After every move the wizard explicitly focuses the moved pane: the popup
-// closes on top of the move, and a `pane.focus` issued after the move is
-// what lands focus in the pane's new location instead of restoring the
-// pane that spawned the popup.
+// After every move the pane is explicitly focused: the popup closes on top
+// of the move, and a `pane.focus` issued after the move is what lands focus
+// in the pane's new location instead of restoring the pane that spawned
+// the popup.
 
 use std::collections::BTreeMap;
 
@@ -34,7 +28,7 @@ use crate::palette::{
     current_location, layout_export_tab, pane_move, CurrentLocation, Direction, LayoutNode,
     PaneMoveDestination, SplitDirection,
 };
-use crate::picker::{pick_nav, Choice, PickOutcome, Picker};
+use crate::picker::{pick, pick_nav, Choice, PickOutcome, Picker};
 use crate::space;
 
 #[derive(Serialize)]
@@ -73,7 +67,6 @@ struct Snapshot {
     workspaces: Vec<WizardWorkspace>,
     tabs: Vec<WizardTab>,
     current: Option<CurrentLocation>,
-    sessions: Vec<WizardSession>,
     source: Option<SourcePane>,
 }
 
@@ -82,15 +75,11 @@ impl Snapshot {
         let workspaces = list_workspaces(client)?;
         let tabs = list_tabs(client)?;
         let current = current_location(client, pane_id).ok();
-        let sessions = std::env::var("HERDR_SOCKET_PATH")
-            .map(|socket| fetch_sessions(&socket))
-            .unwrap_or_default();
         let source = fetch_source(client, pane_id).ok();
         Ok(Snapshot {
             workspaces,
             tabs,
             current,
-            sessions,
             source,
         })
     }
@@ -113,6 +102,11 @@ impl Snapshot {
             .as_ref()
             .map(|location| location.tab_id.as_str())
     }
+
+    /// The moved pane's display name, for new-tab labels.
+    fn moved_pane_label(&self) -> Option<&str> {
+        self.source.as_ref().and_then(SourcePane::display_name)
+    }
 }
 
 /// A running Herdr session other than the current one. Panes cannot move
@@ -134,6 +128,8 @@ struct SourcePane {
     #[serde(default)]
     title: Option<String>,
     #[serde(default)]
+    tokens: BTreeMap<String, String>,
+    #[serde(default)]
     cwd: Option<String>,
     #[serde(default)]
     foreground_cwd: Option<String>,
@@ -148,6 +144,18 @@ impl SourcePane {
     /// pane's launch cwd.
     fn cwd(&self) -> Option<&str> {
         self.foreground_cwd.as_deref().or(self.cwd.as_deref())
+    }
+
+    /// The name the sidebar shows for this pane: the title daemon's
+    /// `session` token, else the pane's own title. New tabs take this label
+    /// so a moved pane keeps its name instead of landing in a tab named
+    /// after its number.
+    fn display_name(&self) -> Option<&str> {
+        self.tokens
+            .get("session")
+            .map(String::as_str)
+            .filter(|token| !token.is_empty())
+            .or(self.title.as_deref().filter(|title| !title.is_empty()))
     }
 }
 
@@ -184,9 +192,9 @@ impl WizardPane {
     }
 }
 
-/// What "Move to another session…" moves.
+/// What "Move pane to another session…" moves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransplantScope {
+pub(crate) enum TransplantScope {
     Pane,
     Workspace,
 }
@@ -198,8 +206,19 @@ pub enum WizardExit {
     /// A move executed or the user cancelled (Ctrl-C, or closed the popup):
     /// the palette is done.
     Done,
-    /// Esc on the wizard's first level: re-open the root palette.
+    /// Esc on an already-clear query: re-open the root palette.
     Back,
+}
+
+/// What selecting a row does: execute a `pane.move` or transplant the pane
+/// (or its whole workspace) into another running session.
+#[derive(Debug)]
+enum Step {
+    Execute(PaneMoveDestination),
+    Transplant {
+        scope: TransplantScope,
+        session: WizardSession,
+    },
 }
 
 #[derive(Serialize)]
@@ -207,139 +226,110 @@ struct PaneFocusParams {
     pane_id: String,
 }
 
-#[derive(Debug)]
-enum Level {
-    DestinationKind,
-    ChooseTab,
-    ChooseSplit { tab_id: String, breadcrumb: String },
-    ChooseSession { scope: TransplantScope },
+/// One `pane.move` followed by the focus that lands the user on the moved
+/// pane: the popup closes on top of the move, and the post-move focus is
+/// what keeps the moved pane active instead of restoring the pane that
+/// spawned the popup.
+pub(crate) fn execute_move(
+    client: &SocketClient,
+    pane_id: &str,
+    destination: PaneMoveDestination,
+) -> Result<(), String> {
+    let moved_pane_id = pane_move(client, pane_id, destination, true)?;
+    client.send(
+        "cast:pane-focus",
+        "pane.focus",
+        PaneFocusParams {
+            pane_id: moved_pane_id,
+        },
+    )?;
+    Ok(())
 }
 
-/// What selecting a row does: execute a `pane.move` (wizard done) or descend
-/// one level.
-#[derive(Debug)]
-enum Step {
-    Execute(PaneMoveDestination),
-    Push(Level),
-    Transplant {
-        scope: TransplantScope,
-        session: WizardSession,
-    },
+/// The moved pane's display name (its `session` token, else its title) —
+/// the label a new tab takes, so moves stop leaving tabs named "1".
+pub(crate) fn moved_pane_label(client: &SocketClient, pane_id: &str) -> Option<String> {
+    fetch_source(client, pane_id)
+        .ok()
+        .and_then(|source| source.display_name().map(str::to_owned))
 }
 
+/// Sessions other than the current one, from the `herdr session list` CLI.
+fn current_sessions() -> Vec<WizardSession> {
+    std::env::var("HERDR_SOCKET_PATH")
+        .map(|socket| fetch_sessions(&socket))
+        .unwrap_or_default()
+}
+
+/// Whether any session other than the current one is running; gates the
+/// palette root's cross-session move entries.
+pub(crate) fn other_sessions_exist() -> bool {
+    !current_sessions().is_empty()
+}
+
+/// The palette root's "Move pane/workspace to another session…" entries:
+/// pick a session, then transplant. Returns whether a move ran (the popup
+/// closes) or the user backed out (the palette root reopens).
+pub(crate) fn move_to_session(
+    client: &SocketClient,
+    pane_id: &str,
+    scope: TransplantScope,
+) -> Result<bool, String> {
+    let sessions = current_sessions();
+    if sessions.is_empty() {
+        return Err("no other running Herdr sessions".to_string());
+    }
+    let (placeholder, choices) = session_choices(&sessions, scope);
+    let picker = Picker {
+        placeholder: &placeholder,
+        empty_message: "No matching sessions",
+        order: None,
+    };
+    let Some(Step::Transplant { session, .. }) = pick(picker, choices)? else {
+        return Ok(false);
+    };
+    let snapshot = Snapshot::fetch(client, pane_id)?;
+    match scope {
+        TransplantScope::Pane => transplant(client, &snapshot, &session, pane_id)?,
+        TransplantScope::Workspace => transplant_workspace(client, &snapshot, &session)?,
+    }
+    Ok(true)
+}
+
+/// The workspace → tab tree submenu. Workspace rows move the pane into a
+/// new tab of that workspace; tab rows move it into that tab with the
+/// default split (right). Esc on an already-clear query backs out to the
+/// palette's root action list.
 pub fn run(client: &SocketClient, pane_id: &str) -> Result<WizardExit, String> {
     let snapshot = Snapshot::fetch(client, pane_id)?;
-    let mut stack = vec![Level::DestinationKind];
-    while let Some(level) = stack.last() {
-        let (placeholder, choices) = build_level(&snapshot, level);
-        let picker = Picker {
-            placeholder: &placeholder,
-            empty_message: "No matches",
-            order: None,
-        };
-        match pick_nav(picker, choices)? {
-            PickOutcome::Selected(Step::Execute(destination)) => {
-                let moved_pane_id = pane_move(client, pane_id, destination, true)?;
-                client.send(
-                    "cast:pane-focus",
-                    "pane.focus",
-                    PaneFocusParams {
-                        pane_id: moved_pane_id,
-                    },
-                )?;
-                return Ok(WizardExit::Done);
-            }
-            PickOutcome::Selected(Step::Transplant { scope, session }) => {
-                match scope {
-                    TransplantScope::Pane => transplant(client, &snapshot, &session, pane_id)?,
-                    TransplantScope::Workspace => {
-                        transplant_workspace(client, &snapshot, &session)?
-                    }
-                }
-                return Ok(WizardExit::Done);
-            }
-            PickOutcome::Selected(Step::Push(next)) => stack.push(next),
-            PickOutcome::Back => {
-                stack.pop();
-            }
-            PickOutcome::Cancel => return Ok(WizardExit::Done),
+    let (placeholder, choices) = choose_tab(&snapshot);
+    let picker = Picker {
+        placeholder: &placeholder,
+        empty_message: "No matches",
+        order: None,
+    };
+    match pick_nav(picker, choices)? {
+        PickOutcome::Selected(Step::Execute(destination)) => {
+            execute_move(client, pane_id, destination)?;
+            Ok(WizardExit::Done)
         }
-    }
-    Ok(WizardExit::Back)
-}
-
-fn build_level(snapshot: &Snapshot, level: &Level) -> (String, Vec<Choice<Step>>) {
-    match level {
-        Level::DestinationKind => destination_kind(snapshot),
-        Level::ChooseTab => choose_tab(snapshot),
-        Level::ChooseSplit { tab_id, breadcrumb } => choose_split(tab_id, breadcrumb),
-        Level::ChooseSession { scope } => choose_session(snapshot, *scope),
-    }
-}
-
-fn destination_kind(snapshot: &Snapshot) -> (String, Vec<Choice<Step>>) {
-    let current = snapshot
-        .current_workspace_id()
-        .and_then(|workspace_id| snapshot.workspace_label(workspace_id))
-        .map(str::to_owned);
-    let mut search_here = "new tab here current workspace".to_string();
-    if let Some(label) = &current {
-        search_here.push(' ');
-        search_here.push_str(label);
-    }
-    let mut choices = vec![
-        Choice::new(
-            Step::Execute(PaneMoveDestination::NewTab {
-                label: None,
-                workspace_id: None,
-            }),
-            "New tab here",
-            None::<String>,
-            search_here,
-        ),
-        Choice::new(
-            Step::Push(Level::ChooseTab),
-            "Choose workspace or tab…",
-            None::<String>,
-            "choose workspace tab existing move into fuzzy tree",
-        ),
-        Choice::new(
-            Step::Execute(PaneMoveDestination::NewWorkspace {
-                label: None,
-                tab_label: None,
-            }),
-            "New workspace",
-            None::<String>,
-            "new workspace detach",
-        ),
-        // Hidden when the CLI reports no other running sessions.
-    ];
-    if !snapshot.sessions.is_empty() {
-        choices.push(Choice::new(
-            Step::Push(Level::ChooseSession {
-                scope: TransplantScope::Pane,
-            }),
-            "Move pane to another session…",
-            None::<String>,
-            "move pane send another session other herdr running transplant",
-        ));
-        if snapshot.current_workspace_id().is_some() {
-            choices.push(Choice::new(
-                Step::Push(Level::ChooseSession {
-                    scope: TransplantScope::Workspace,
-                }),
-                "Move workspace to another session…",
-                None::<String>,
-                "move workspace send bulk another session other herdr running transplant",
-            ));
+        PickOutcome::Selected(Step::Transplant { scope, session }) => {
+            match scope {
+                TransplantScope::Pane => transplant(client, &snapshot, &session, pane_id)?,
+                TransplantScope::Workspace => transplant_workspace(client, &snapshot, &session)?,
+            }
+            Ok(WizardExit::Done)
         }
+        PickOutcome::Back => Ok(WizardExit::Back),
+        PickOutcome::Cancel => Ok(WizardExit::Done),
     }
-    ("Search destinations".to_string(), choices)
 }
 
-fn choose_session(snapshot: &Snapshot, scope: TransplantScope) -> (String, Vec<Choice<Step>>) {
-    let choices = snapshot
-        .sessions
+fn session_choices(
+    sessions: &[WizardSession],
+    scope: TransplantScope,
+) -> (String, Vec<Choice<Step>>) {
+    let choices = sessions
         .iter()
         .map(|session| {
             Choice::new(
@@ -361,12 +351,14 @@ fn choose_session(snapshot: &Snapshot, scope: TransplantScope) -> (String, Vec<C
 }
 
 fn choose_tab(snapshot: &Snapshot) -> (String, Vec<Choice<Step>>) {
+    let label = snapshot.moved_pane_label().map(str::to_owned);
     let mut choices = Vec::new();
     for workspace in &snapshot.workspaces {
         let root_index = choices.len();
         choices.push(workspace_choice(
             workspace,
             snapshot.current_workspace_id() == Some(workspace.workspace_id.as_str()),
+            label.as_deref(),
         ));
         choices.extend(
             snapshot
@@ -380,7 +372,11 @@ fn choose_tab(snapshot: &Snapshot) -> (String, Vec<Choice<Step>>) {
     ("Search workspaces and tabs".to_string(), choices)
 }
 
-fn workspace_choice(workspace: &WizardWorkspace, current: bool) -> Choice<Step> {
+fn workspace_choice(
+    workspace: &WizardWorkspace,
+    current: bool,
+    label: Option<&str>,
+) -> Choice<Step> {
     let mut metadata = Vec::new();
     if let Some(location) = space::describe(&workspace.tokens) {
         metadata.push(location);
@@ -417,7 +413,7 @@ fn workspace_choice(workspace: &WizardWorkspace, current: bool) -> Choice<Step> 
     let title = format!("{} ({} panes)", workspace.label, workspace.pane_count);
     Choice::new(
         Step::Execute(PaneMoveDestination::NewTab {
-            label: None,
+            label: label.map(str::to_owned),
             workspace_id: Some(workspace.workspace_id.clone()),
         }),
         title,
@@ -446,48 +442,17 @@ fn tab_choice(tab: &WizardTab, workspace: &WizardWorkspace, parent: usize) -> Ch
         workspace.label, tab.label, tab.number, tab.agent_status, tab.tab_id
     );
     Choice::new(
-        Step::Push(Level::ChooseSplit {
+        Step::Execute(PaneMoveDestination::Tab {
             tab_id: tab.tab_id.clone(),
-            breadcrumb: format!("{} › {title}", workspace.label),
+            target_pane_id: None,
+            split: SplitDirection::Right,
+            ratio: None,
         }),
         title.clone(),
         Some(detail),
         search,
     )
     .child_of(parent)
-}
-
-fn choose_split(tab_id: &str, breadcrumb: &str) -> (String, Vec<Choice<Step>>) {
-    let rows = [
-        (
-            SplitDirection::Right,
-            "Split right",
-            "split right horizontal side by side column",
-        ),
-        (
-            SplitDirection::Down,
-            "Split below",
-            "split below down vertical stacked row",
-        ),
-    ];
-    let split = |split: SplitDirection| PaneMoveDestination::Tab {
-        tab_id: tab_id.to_owned(),
-        target_pane_id: None,
-        split,
-        ratio: None,
-    };
-    let choices = rows
-        .into_iter()
-        .map(|(direction, title, search)| {
-            Choice::new(
-                Step::Execute(split(direction)),
-                title,
-                None::<String>,
-                search,
-            )
-        })
-        .collect();
-    (format!("Split in {breadcrumb}"), choices)
 }
 
 #[derive(Serialize)]
@@ -1233,40 +1198,12 @@ mod tests {
                 workspace_id: "w1".to_string(),
                 tab_id: "t1".to_string(),
             }),
-            sessions: Vec::new(),
             source: None,
         }
     }
 
     fn matches_json(destination: &PaneMoveDestination, expected: serde_json::Value) {
         assert_eq!(serde_json::to_value(destination).unwrap(), expected);
-    }
-
-    #[test]
-    fn destination_kind_leads_with_a_new_tab_in_the_current_workspace() {
-        let (placeholder, choices) = destination_kind(&snapshot());
-        assert_eq!(placeholder, "Search destinations");
-        assert_eq!(choices.len(), 3);
-
-        let Step::Execute(destination) = &choices[0].value else {
-            panic!("first destination must execute directly");
-        };
-        matches_json(
-            destination,
-            serde_json::json!({"type": "new_tab", "label": null, "workspace_id": null}),
-        );
-        assert!(choices[0].search_text.contains("ws-w1"));
-
-        let Step::Push(Level::ChooseTab) = &choices[1].value else {
-            panic!("second destination must descend into the tab tree");
-        };
-        let Step::Execute(destination) = &choices[2].value else {
-            panic!("third destination must execute directly");
-        };
-        matches_json(
-            destination,
-            serde_json::json!({"type": "new_workspace", "label": null, "tab_label": null}),
-        );
     }
 
     #[test]
@@ -1283,16 +1220,70 @@ mod tests {
             serde_json::json!({"type": "new_tab", "label": null, "workspace_id": "w1"}),
         );
 
-        let Step::Push(Level::ChooseSplit { tab_id, breadcrumb }) = &choices[1].value else {
-            panic!("tab rows descend into the split level");
+        let Step::Execute(destination) = &choices[1].value else {
+            panic!("tab rows execute the move with the default split");
         };
-        assert_eq!(tab_id, "t2");
-        assert!(breadcrumb.contains("ws-w1"));
+        matches_json(
+            destination,
+            serde_json::json!({
+                "type": "tab",
+                "tab_id": "t2",
+                "target_pane_id": null,
+                "split": "right",
+                "ratio": null
+            }),
+        );
 
-        let Step::Push(Level::ChooseSplit { tab_id, .. }) = &choices[3].value else {
-            panic!("tab rows descend into the split level");
+        let Step::Execute(destination) = &choices[3].value else {
+            panic!("tab rows execute the move with the default split");
         };
-        assert_eq!(tab_id, "t3");
+        matches_json(
+            destination,
+            serde_json::json!({
+                "type": "tab",
+                "tab_id": "t3",
+                "target_pane_id": null,
+                "split": "right",
+                "ratio": null
+            }),
+        );
+    }
+
+    #[test]
+    fn choose_tab_labels_new_tabs_with_the_moved_pane_name() {
+        let mut snapshot = snapshot();
+        snapshot.source = Some(SourcePane {
+            title: Some("pane title".to_string()),
+            tokens: BTreeMap::from([("session".to_string(), "Session Name".to_string())]),
+            cwd: Some("/tmp".to_string()),
+            foreground_cwd: None,
+            agent: None,
+            agent_session: None,
+        });
+        let (_, choices) = choose_tab(&snapshot);
+        let Step::Execute(PaneMoveDestination::NewTab { label, .. }) = &choices[0].value else {
+            panic!("workspace rows create a new tab in that workspace");
+        };
+        assert_eq!(label.as_deref(), Some("Session Name"));
+    }
+
+    #[test]
+    fn source_pane_display_name_prefers_the_session_token() {
+        let mut source = SourcePane {
+            title: Some("pane title".to_string()),
+            tokens: BTreeMap::new(),
+            cwd: None,
+            foreground_cwd: None,
+            agent: None,
+            agent_session: None,
+        };
+        assert_eq!(source.display_name(), Some("pane title"));
+        source.tokens.insert("session".to_string(), "".to_string());
+        assert_eq!(source.display_name(), Some("pane title"));
+        source
+            .tokens
+            .insert("session".to_string(), "Session Name".to_string());
+        assert_eq!(source.display_name(), Some("Session Name"));
     }
 
     #[test]
@@ -1305,44 +1296,18 @@ mod tests {
     }
 
     #[test]
-    fn destination_kind_hides_session_moves_without_other_sessions() {
-        let (_, choices) = destination_kind(&snapshot());
-        assert_eq!(choices.len(), 3);
-
-        let mut snapshot = snapshot();
-        snapshot.sessions.push(WizardSession {
-            name: "factorial".to_string(),
-            socket_path: "/tmp/herdr/sessions/factorial/herdr.sock".to_string(),
-        });
-        let (_, choices) = destination_kind(&snapshot);
-        assert_eq!(choices.len(), 5);
-        assert_eq!(choices[3].title, "Move pane to another session…");
-        assert_eq!(choices[4].title, "Move workspace to another session…");
-    }
-
-    #[test]
-    fn destination_kind_hides_workspace_move_without_a_current_workspace() {
-        let mut snapshot = snapshot();
-        snapshot.current = None;
-        snapshot.sessions.push(WizardSession {
-            name: "factorial".to_string(),
-            socket_path: "/tmp/herdr/sessions/factorial/herdr.sock".to_string(),
-        });
-        let (_, choices) = destination_kind(&snapshot);
-        assert_eq!(choices.len(), 4);
-        assert_eq!(choices[3].title, "Move pane to another session…");
-    }
-
-    #[test]
-    fn choose_session_offers_one_row_per_session() {
-        let mut snapshot = snapshot();
-        for name in ["sandboxes", "factorial"] {
-            snapshot.sessions.push(WizardSession {
-                name: name.to_string(),
-                socket_path: format!("/tmp/herdr/sessions/{name}/herdr.sock"),
-            });
-        }
-        let (placeholder, choices) = choose_session(&snapshot, TransplantScope::Pane);
+    fn session_choices_offers_one_row_per_session() {
+        let sessions = vec![
+            WizardSession {
+                name: "sandboxes".to_string(),
+                socket_path: "/tmp/herdr/sessions/sandboxes/herdr.sock".to_string(),
+            },
+            WizardSession {
+                name: "factorial".to_string(),
+                socket_path: "/tmp/herdr/sessions/factorial/herdr.sock".to_string(),
+            },
+        ];
+        let (placeholder, choices) = session_choices(&sessions, TransplantScope::Pane);
         assert_eq!(placeholder, "Move pane into which session");
         assert_eq!(choices.len(), 2);
         let Step::Transplant { scope, session } = &choices[1].value else {
@@ -1352,7 +1317,7 @@ mod tests {
         assert_eq!(session.name, "factorial");
         assert!(choices[1].search_text.contains("factorial"));
 
-        let (placeholder, _) = choose_session(&snapshot, TransplantScope::Workspace);
+        let (placeholder, _) = session_choices(&sessions, TransplantScope::Workspace);
         assert_eq!(placeholder, "Move workspace into which session");
     }
 
@@ -1502,38 +1467,5 @@ mod tests {
     fn resume_args_reject_unofficial_sources() {
         assert_eq!(resume_args(&session_ref("hook:custom", "pi")), None);
         assert_eq!(resume_args(&session_ref("herdr:pi", "ninja")), None);
-    }
-
-    #[test]
-    fn split_level_always_sends_the_required_split_field() {
-        let (placeholder, choices) = choose_split("t2", "ws-w1 › #2 x");
-        assert_eq!(placeholder, "Split in ws-w1 › #2 x");
-        assert_eq!(choices.len(), 2);
-        let Step::Execute(right) = &choices[0].value else {
-            panic!("split rows must execute directly");
-        };
-        let Step::Execute(down) = &choices[1].value else {
-            panic!("split rows must execute directly");
-        };
-        matches_json(
-            right,
-            serde_json::json!({
-                "type": "tab",
-                "tab_id": "t2",
-                "target_pane_id": null,
-                "split": "right",
-                "ratio": null
-            }),
-        );
-        matches_json(
-            down,
-            serde_json::json!({
-                "type": "tab",
-                "tab_id": "t2",
-                "target_pane_id": null,
-                "split": "down",
-                "ratio": null
-            }),
-        );
     }
 }

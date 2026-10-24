@@ -31,8 +31,11 @@ non-interactive commands never wait.
 
 `src/picker.rs` is one ratatui/crossterm fuzzy selector reused by every
 popup: readline-style editing, tree rows, animated agent-status icons, and
-`pick_nav`, the wizard-level variant whose Escape means "clear the query,
-then go back one level" while Ctrl-C cancels outright.
+`pick_nav`, the submenu variant whose Escape means "clear the query,
+then go back one level" while Ctrl-C cancels outright. The chrome mirrors
+Herdr's native overlays: the `› ` query row gains a right-aligned live
+match count, a separator rule sits under it, rows carry a right-aligned
+status column, and the selected row inverts on the accent color.
 
 Colors come from `src/theme.rs`: it reads Herdr's config
 (`[theme.custom.dark]` / `[theme.custom.light]`, dark or light chosen by
@@ -58,26 +61,29 @@ picker unreadable.
 
 ### Layout palette (`palette`)
 
-`src/palette.rs`: flip a two-pane split (`layout.export` + `pane.move`,
-rejecting nested layouts and restoring on failure), rename the current tab
-or workspace (`tab.rename` / `workspace.rename`), and dispatch "Move pane…"
-to the move wizard. The window title is owned by `src/title.rs`; nothing
-here writes it.
+`src/palette.rs`: one flat root list. The move destinations lead — move
+pane to new tab here, to new workspace, to workspace or tab, and, when
+other sessions run, to another session (pane or whole workspace) —
+followed by flip a two-pane split (`layout.export` + `pane.move`, rejecting
+nested layouts and restoring on failure) and rename the current tab or
+workspace (`tab.rename` / `workspace.rename`). The window title is owned
+by `src/title.rs`; nothing here writes it.
 
-### Move wizard (`palette` → "Move pane…")
+A new tab or workspace created by a move carries the moved pane's display
+name (`session` token, else the pane title), so moved panes keep their
+names instead of landing in tabs named after their number.
 
-`src/move_wizard.rs` keeps an explicit stack of picker levels:
+### Move pane submenu (`palette` → "Move pane to workspace or tab…")
 
-```text
-destination kind
-  → fuzzy workspace → tab tree → split direction (tabs always ask)
-  → or session picker (move to another Herdr session)
-```
+`src/move_wizard.rs` is one picker level: a fuzzy workspace → tab tree.
 
-- Escape clears the query, then pops one level; Esc on the first level
-  returns to the palette's root action list; Ctrl-C aborts from any depth.
+- Workspace rows execute a `pane.move` into a new tab of that workspace;
+  tab rows execute a `pane.move` into that tab with the default split
+  (right) — the protocol's required split direction is never asked for.
+- Escape clears the query, then returns to the palette's root list;
+  Ctrl-C aborts outright.
 - One snapshot of `workspace.list`, `tab.list`, the pane's location and
-  details, and `herdr session list --json` serves every level.
+  details, and `herdr session list --json` serves the level.
 - Same-session moves are one `pane.move` followed by an explicit
   `pane.focus` on the resulting pane: the popup closes on top of the move,
   and the post-move focus is what lands the user on the moved pane.

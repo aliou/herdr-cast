@@ -32,16 +32,16 @@ fn accent() -> Color {
     crate::theme::palette().accent
 }
 
-fn selection() -> Color {
-    crate::theme::palette().selection
-}
-
 fn muted() -> Color {
     crate::theme::palette().muted
 }
 
 fn disabled() -> Color {
     crate::theme::palette().disabled
+}
+
+fn separator() -> Color {
+    crate::theme::palette().separator
 }
 
 fn red() -> Color {
@@ -963,6 +963,7 @@ fn render<T>(
         index += 1;
     }
     render_query(frame, chunks[index], placeholder, state);
+    render_separator(frame, chunks[index + 1]);
     render_results(frame, chunks[index + 2], empty_message, choices, state);
 }
 
@@ -1036,20 +1037,18 @@ fn span_width(spans: &[Span<'_>]) -> u16 {
 }
 
 fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &PickerState) {
+    let prompt = Span::styled(
+        "› ",
+        Style::default().fg(accent()).add_modifier(Modifier::BOLD),
+    );
     let content = if state.query.is_empty() {
         Line::from(vec![
-            Span::styled(
-                "› ",
-                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-            ),
+            prompt,
             Span::styled(placeholder, Style::default().fg(muted())),
         ])
     } else {
         Line::from(vec![
-            Span::styled(
-                "› ",
-                Style::default().fg(accent()).add_modifier(Modifier::BOLD),
-            ),
+            prompt,
             Span::styled(&state.query, Style::default().fg(foreground())),
         ])
     };
@@ -1057,6 +1056,23 @@ fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &Picker
         Paragraph::new(content).style(Style::default().bg(background())),
         area,
     );
+    // Live match count, right-aligned like herdr's own overlays.
+    let count = format!(
+        "{} {}",
+        state.matches.len(),
+        if state.matches.len() == 1 {
+            "row"
+        } else {
+            "rows"
+        }
+    );
+    let count_width = UnicodeWidthStr::width(count.as_str()) as u16;
+    if area.width > count_width {
+        frame.render_widget(
+            Paragraph::new(count).style(Style::default().fg(disabled()).bg(background())),
+            Rect::new(area.x + area.width - count_width, area.y, count_width, 1),
+        );
+    }
     if area.width > 0 && area.height > 0 {
         let query_column = UnicodeWidthStr::width(&state.query[..state.cursor]) as u16;
         let x = area
@@ -1066,6 +1082,17 @@ fn render_query(frame: &mut Frame, area: Rect, placeholder: &str, state: &Picker
             .min(area.x + area.width.saturating_sub(1));
         frame.set_cursor_position((x, area.y));
     }
+}
+
+fn render_separator(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(
+        Paragraph::new("─".repeat(area.width as usize))
+            .style(Style::default().fg(separator()).bg(background())),
+        area,
+    );
 }
 
 fn order_tabs<'a>(order: OrderToggle<'a>, active: usize) -> Vec<Span<'a>> {
@@ -1263,9 +1290,13 @@ fn render_results<T>(
     let items = state.matches.iter().enumerate().map(|(position, index)| {
         let choice = &choices[*index];
         let selected = position == state.selected;
+        // Native-popup selection: the whole row inverts (accent background,
+        // panel-background foreground, bold), so every span color funnels
+        // through this closure.
+        let row_fg = |color: Color| if selected { background() } else { color };
         let title_style = if selected {
             Style::default()
-                .fg(foreground())
+                .fg(row_fg(foreground()))
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(foreground())
@@ -1288,25 +1319,20 @@ fn render_results<T>(
             (" ", accent())
         };
         let mut spans = vec![
-            Span::styled(marker, Style::default().fg(accent())),
-            Span::styled(format!("{gutter} "), Style::default().fg(gutter_color)),
-            Span::styled(tree, Style::default().fg(muted())),
+            Span::styled(marker, Style::default().fg(row_fg(accent()))),
+            Span::styled(
+                format!("{gutter} "),
+                Style::default().fg(row_fg(gutter_color)),
+            ),
+            Span::styled(tree, Style::default().fg(row_fg(muted()))),
         ];
         if let Some(context) = &choice.context {
             spans.push(Span::styled(
                 format!("{context} "),
-                Style::default().fg(if selected { foreground() } else { accent() }),
+                Style::default().fg(row_fg(accent())),
             ));
         }
         spans.push(Span::styled(&choice.title, title_style));
-        if let Some(status) = choice.status {
-            let (icon, color) = status_icon(status);
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(
-                format!("{icon} {}", status_label(status)),
-                Style::default().fg(color),
-            ));
-        }
         let show_inline_detail = hierarchical
             || (choice.inline_detail
                 && (!choice.detail_primary_only || state.ranks_by_alternate_order()));
@@ -1314,7 +1340,7 @@ fn render_results<T>(
             if let Some(detail) = &choice.detail {
                 spans.push(Span::styled(
                     format!("  {detail}"),
-                    Style::default().fg(if selected { foreground() } else { muted() }),
+                    Style::default().fg(row_fg(muted())),
                 ));
             }
         }
@@ -1322,14 +1348,32 @@ fn render_results<T>(
             if let Some(suffix) = &choice.primary_suffix {
                 spans.push(Span::styled(
                     format!("  {suffix}"),
-                    Style::default().fg(muted()),
+                    Style::default().fg(row_fg(muted())),
                 ));
             }
+        }
+        // Status column at the right edge, like herdr's native overlays;
+        // falls back inline when the row is too narrow to hold it apart.
+        if let Some(status) = choice.status {
+            let (icon, color) = status_icon(status);
+            let text = format!("{icon} {}", status_label(status));
+            let used: usize = spans
+                .iter()
+                .map(|span| UnicodeWidthStr::width(span.content.as_ref()))
+                .sum();
+            let status_width = UnicodeWidthStr::width(text.as_str());
+            if area.width as usize >= used + status_width + 2 {
+                let pad = area.width as usize - used - status_width;
+                spans.push(Span::raw(" ".repeat(pad)));
+            } else {
+                spans.push(Span::raw("  "));
+            }
+            spans.push(Span::styled(text, Style::default().fg(row_fg(color))));
         }
         let mut lines = vec![Line::from(spans)];
         if has_detail_line(choice, show_details) {
             if let Some(detail) = &choice.detail {
-                let detail_color = if selected { foreground() } else { muted() };
+                let detail_color = if selected { background() } else { muted() };
                 lines.push(Line::from(vec![
                     Span::raw("  "),
                     Span::styled(detail, Style::default().fg(detail_color)),
@@ -1340,7 +1384,7 @@ fn render_results<T>(
     });
     let list = List::new(items)
         .style(Style::default().bg(background()))
-        .highlight_style(Style::default().bg(selection()));
+        .highlight_style(Style::default().bg(accent()));
     let mut list_state = ListState::default().with_selected(Some(state.selected));
     frame.render_stateful_widget(list, area, &mut list_state);
 
@@ -2042,8 +2086,13 @@ mod layout {
             "unexpected tab row: {:?}",
             rendered[0]
         );
-        // The query row now holds nothing but the prompt.
-        assert_eq!(rendered[1], "\u{203a} Search workspaces and panes");
+        // The query row holds the prompt and the live match count.
+        assert!(rendered[1].starts_with("\u{203a} Search workspaces and panes"));
+        assert!(
+            rendered[1].contains("rows"),
+            "missing count: {:?}",
+            rendered[1]
+        );
     }
 
     #[test]
@@ -2131,6 +2180,46 @@ mod layout {
         )];
         let rendered = rows(&choices, None, false);
         assert_eq!(query_row(&rendered), Some(0));
+    }
+
+    #[test]
+    fn the_separator_sits_under_the_query_row() {
+        let choices = vec![Choice::new(
+            "flip",
+            "Flip split direction",
+            None::<String>,
+            "flip",
+        )];
+        let rendered = rows(&choices, None, false);
+        let query = query_row(&rendered).expect("query row renders");
+        assert!(
+            rendered[query + 1].starts_with('─'),
+            "separator: {:?}",
+            rendered[query + 1]
+        );
+        // No footer: the results run to the last row.
+        assert!(
+            !rendered
+                .last()
+                .expect("rows render")
+                .contains("type to search"),
+            "unexpected footer: {:?}",
+            rendered.last()
+        );
+    }
+
+    #[test]
+    fn statuses_align_to_the_right_edge_of_the_row() {
+        let choices = vec![
+            Choice::new("idle", "an agent pane", None::<String>, "agent")
+                .with_optional_status(Some(ChoiceStatus::Idle)),
+        ];
+        let rendered = result_rows(&choices, 0, 40, 5);
+        assert!(
+            rendered[0].ends_with("✓ idle"),
+            "status should hug the right edge: {:?}",
+            rendered[0]
+        );
     }
 
     #[test]

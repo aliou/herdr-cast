@@ -41,8 +41,8 @@ misunderstanding.
   senders own their fallback; the bridge socket exists only while a host
   is connected.
 - **Frame** — one wire message: a JSON header line plus an optional raw
-  body. `Hello`, `Ping`, `Bye`, `Notify`, `Dismiss`, `Pasteboard`, `Ack`,
-  `Focus`.
+  body. `Hello`, `Ping`, `Bye`, `Notify`, `Dismiss`, `Pasteboard`, `OpenUrl`,
+  `Ack`, `Focus`.
 - **Ack** — the host's reply after applying a request, never before.
 - **Control socket** — `bridge-control.sock` in the host's plugin state
   directory; the notification click talks to it so the host daemon sends a

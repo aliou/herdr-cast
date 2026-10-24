@@ -22,9 +22,9 @@ pub struct Palette {
     pub background: Color, // panel_bg
     pub foreground: Color, // text
     pub accent: Color,     // accent
-    pub selection: Color,  // selection_bg
     pub muted: Color,      // overlay0
     pub disabled: Color,   // overlay1
+    pub separator: Color,  // surface1
     pub red: Color,
     pub green: Color,
     pub yellow: Color,
@@ -36,9 +36,9 @@ const FALLBACK: Palette = Palette {
     background: Color::Rgb(0x15, 0x15, 0x15),
     foreground: Color::Rgb(0xe8, 0xe8, 0xd3),
     accent: Color::Rgb(0x8f, 0xbf, 0xdc),
-    selection: Color::Rgb(0x40, 0x40, 0x40),
     muted: Color::Rgb(0x60, 0x59, 0x58),
     disabled: Color::Rgb(0x88, 0x88, 0x88),
+    separator: Color::Rgb(0x33, 0x33, 0x33),
     red: Color::Rgb(0xd7, 0x45, 0x45),
     green: Color::Rgb(0x99, 0xad, 0x6a),
     yellow: Color::Rgb(0xfa, 0xd0, 0x7a),
@@ -154,9 +154,9 @@ struct Custom {
     background: Option<Color>,
     foreground: Option<Color>,
     accent: Option<Color>,
-    selection: Option<Color>,
     muted: Option<Color>,
     disabled: Option<Color>,
+    separator: Option<Color>,
     red: Option<Color>,
     green: Option<Color>,
     yellow: Option<Color>,
@@ -172,9 +172,9 @@ impl Custom {
             "panel_bg" => self.background = Some(color),
             "text" => self.foreground = Some(color),
             "accent" => self.accent = Some(color),
-            "selection_bg" => self.selection = Some(color),
             "overlay0" => self.muted = Some(color),
             "overlay1" => self.disabled = Some(color),
+            "surface1" => self.separator = Some(color),
             "red" => self.red = Some(color),
             "green" => self.green = Some(color),
             "yellow" => self.yellow = Some(color),
@@ -324,15 +324,15 @@ fn resolve(config: Option<&str>, light: bool) -> Palette {
             file.custom.accent,
             FALLBACK.accent,
         ),
-        selection: at(
-            mode.and_then(|m| m.selection),
-            file.custom.selection,
-            FALLBACK.selection,
-        ),
         muted: at(
             mode.and_then(|m| m.muted),
             file.custom.muted,
             FALLBACK.muted,
+        ),
+        separator: at(
+            mode.and_then(|m| m.separator),
+            file.custom.separator,
+            FALLBACK.separator,
         ),
         disabled: at(
             mode.and_then(|m| m.disabled),
@@ -384,6 +384,7 @@ accent = "#8fbfdc"        # panel.focused_border / morning_glory
 panel_bg = "#151515"      # background
 selection_bg = "#404040"
 overlay0 = "#777777"
+surface1 = "#2c2c2c"
 text = "#e8e8d3"
 red = "#d74545"
 green = "#99ad6a"
@@ -419,10 +420,12 @@ rows = [
         assert_eq!(file.dark.background, parse_color("#151515"));
         assert_eq!(file.dark.accent, parse_color("#8fbfdc"));
         assert_eq!(file.dark.muted, parse_color("#777777"));
-        assert_eq!(file.light.selection, parse_color("#e8d0c0"));
+        assert_eq!(file.dark.separator, parse_color("#2c2c2c"));
+        assert_eq!(file.light.background, parse_color("#fafafa"));
         assert_eq!(file.light.foreground, parse_color("#000000"));
         // sidebar fg overrides and other config sections are not consumed
         assert_eq!(file.dark.teal, parse_color("#668799"));
+        assert_eq!(file.dark.separator, parse_color("#2c2c2c"));
     }
 
     #[test]

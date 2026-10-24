@@ -128,16 +128,60 @@ pub fn run() -> Result<(), String> {
     let client = SocketClient::new(socket);
 
     loop {
-        let Some(action) = choose_action()? else {
+        let Some(action) = choose_action(&client, &pane_id)? else {
             return Ok(());
         };
         match action {
-            LayoutAction::MovePane => match crate::move_wizard::run(&client, &pane_id)? {
-                // Esc on the wizard's first level re-opens this root palette
-                // instead of closing the popup.
-                crate::move_wizard::WizardExit::Back => continue,
-                crate::move_wizard::WizardExit::Done => return Ok(()),
-            },
+            LayoutAction::NewTab => {
+                let label = crate::move_wizard::moved_pane_label(&client, &pane_id);
+                crate::move_wizard::execute_move(
+                    &client,
+                    &pane_id,
+                    PaneMoveDestination::NewTab {
+                        label,
+                        workspace_id: None,
+                    },
+                )?;
+                return Ok(());
+            }
+            LayoutAction::NewWorkspace => {
+                let tab_label = crate::move_wizard::moved_pane_label(&client, &pane_id);
+                crate::move_wizard::execute_move(
+                    &client,
+                    &pane_id,
+                    PaneMoveDestination::NewWorkspace {
+                        label: None,
+                        tab_label,
+                    },
+                )?;
+                return Ok(());
+            }
+            LayoutAction::ChooseDestination => {
+                match crate::move_wizard::run(&client, &pane_id)? {
+                    // Esc on an empty query re-opens this root action list
+                    // instead of closing the popup.
+                    crate::move_wizard::WizardExit::Back => continue,
+                    crate::move_wizard::WizardExit::Done => return Ok(()),
+                }
+            }
+            LayoutAction::TransplantPane => {
+                if crate::move_wizard::move_to_session(
+                    &client,
+                    &pane_id,
+                    crate::move_wizard::TransplantScope::Pane,
+                )? {
+                    return Ok(());
+                }
+            }
+            LayoutAction::TransplantWorkspace => {
+                if crate::move_wizard::move_to_session(
+                    &client,
+                    &pane_id,
+                    crate::move_wizard::TransplantScope::Workspace,
+                )? {
+                    return Ok(());
+                }
+            }
             LayoutAction::FlipSplit => return flip_action(&client, &pane_id),
             LayoutAction::RenameTab => return rename_current_tab(&client, &pane_id),
             LayoutAction::RenameWorkspace => return rename_current_workspace(&client, &pane_id),
@@ -423,45 +467,80 @@ fn flip_action(client: &SocketClient, pane_id: &str) -> Result<(), String> {
 
 #[derive(Clone, Copy)]
 enum LayoutAction {
-    MovePane,
+    NewTab,
+    NewWorkspace,
+    ChooseDestination,
+    TransplantPane,
+    TransplantWorkspace,
     FlipSplit,
     RenameTab,
     RenameWorkspace,
 }
 
-fn choose_action() -> Result<Option<LayoutAction>, String> {
+fn choose_action(client: &SocketClient, pane_id: &str) -> Result<Option<LayoutAction>, String> {
+    let mut choices = vec![
+        Choice::new(
+            LayoutAction::NewTab,
+            "Move pane to new tab here",
+            None::<String>,
+            "move pane new tab here current workspace",
+        ),
+        Choice::new(
+            LayoutAction::NewWorkspace,
+            "Move pane to new workspace",
+            None::<String>,
+            "move pane new workspace detach",
+        ),
+        Choice::new(
+            LayoutAction::ChooseDestination,
+            "Move pane to workspace or tab…",
+            None::<String>,
+            "move pane workspace tab existing move into fuzzy tree",
+        ),
+        Choice::new(
+            LayoutAction::FlipSplit,
+            "Flip split direction",
+            None::<String>,
+            "flip split direction side by side stacked",
+        ),
+        Choice::new(
+            LayoutAction::RenameTab,
+            "Rename current tab",
+            None::<String>,
+            "rename current tab label",
+        ),
+        Choice::new(
+            LayoutAction::RenameWorkspace,
+            "Rename current workspace",
+            None::<String>,
+            "rename current workspace label",
+        ),
+    ];
+    // Cross-session moves appear only when another session runs, and the
+    // workspace move additionally needs the current workspace to exist.
+    if crate::move_wizard::other_sessions_exist() {
+        choices.push(Choice::new(
+            LayoutAction::TransplantPane,
+            "Move pane to another session…",
+            None::<String>,
+            "move pane send another session other herdr running transplant",
+        ));
+        if current_location(client, pane_id).is_ok() {
+            choices.push(Choice::new(
+                LayoutAction::TransplantWorkspace,
+                "Move workspace to another session…",
+                None::<String>,
+                "move workspace send bulk another session other herdr running transplant",
+            ));
+        }
+    }
     pick(
         Picker {
             placeholder: "Search actions",
             empty_message: "No matching layout actions",
             order: None,
         },
-        vec![
-            Choice::new(
-                LayoutAction::MovePane,
-                "Move pane…",
-                None::<String>,
-                "move pane tab workspace wizard split",
-            ),
-            Choice::new(
-                LayoutAction::FlipSplit,
-                "Flip split direction",
-                None::<String>,
-                "flip split direction side by side stacked",
-            ),
-            Choice::new(
-                LayoutAction::RenameTab,
-                "Rename current tab",
-                None::<String>,
-                "rename current tab label",
-            ),
-            Choice::new(
-                LayoutAction::RenameWorkspace,
-                "Rename current workspace",
-                None::<String>,
-                "rename current workspace label",
-            ),
-        ],
+        choices,
     )
 }
 
